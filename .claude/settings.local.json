@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(head -c 200 \"C:\\\\Users\\\\janko\\\\Downloads\\\\thomas-head-base64.txt\")",
+      "PowerShell(Add-Type -AssemblyName System.Drawing; $img = [System.Drawing.Image]::FromFile\\(\"C:\\\\Users\\\\janko\\\\Documents\\\\Thozempic\\\\thomas-head.png\"\\); \"$\\($img.Width\\)x$\\($img.Height\\)\"; $img.Dispose\\(\\))",
+      "PowerShell($snippet = Get-Content -Raw \"C:\\\\Users\\\\janko\\\\Documents\\\\Thozempic\\\\thomas-head-snippet.js\"; $html = Get-Content -Raw \"C:\\\\Users\\\\janko\\\\Documents\\\\Thozempic\\\\index.html\"; $marker = '<script src=\"thomas-head-snippet.js\"></script>'; if \\($html.Contains\\($marker\\)\\) { $html = $html.Replace\\($marker, \"<script>`n$snippet`n</script>\"\\); [System.IO.File]::WriteAllText\\(\"C:\\\\Users\\\\janko\\\\Documents\\\\Thozempic\\\\index.html\", $html, [System.Text.UTF8Encoding]::new\\($false\\)\\); \"INLINED\" } else { \"MARKER NOT FOUND\" })",
+      "Bash(awk 'NR>=38 && NR<=46 {print NR\": \"$0}' \"C:\\\\Users\\\\janko\\\\Documents\\\\Thozempic\\\\index.html\")",
+      "Bash(awk 'NR>=44 && NR<=60 {if\\(length\\($0\\)>200\\) print NR\": [long line \"length\\($0\\)\" chars]\"; else print NR\": \"$0}' \"C:\\\\Users\\\\janko\\\\Documents\\\\Thozempic\\\\index.html\")"
+    ]
+  }
+}
