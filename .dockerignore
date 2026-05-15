@@ -1,9 +1,15 @@
 .git
 .gitignore
 .dockerignore
+Dockerfile
+docker-compose.yml
 README.md
 *.md
 Thumbs.db
 .DS_Store
 .vscode/
 .idea/
+files.zip
+thomas-head.png
+thomas-head-base64.txt
+thomas-head-snippet.js

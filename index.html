@@ -6,6 +6,8 @@
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="mobile-web-app-capable" content="yes" />
 <title>Thozempic</title>
+<link rel="apple-touch-icon" href="icon.png">
+<link rel="icon" type="image/png" href="icon.png">
 <style>
   html, body {
     margin: 0;
@@ -57,6 +59,22 @@ if (typeof THOMAS_HEAD_DATA_URI === "string") {
   thomasHeadImg.src = "thomas-head.png";
 }
 
+// ---------- Sprite + background images ----------
+const hamburgerImg = new Image();
+let hamburgerReady = false;
+hamburgerImg.onload = () => { hamburgerReady = true; };
+hamburgerImg.src = "hamburger.png";
+
+const pizzaImg = new Image();
+let pizzaReady = false;
+pizzaImg.onload = () => { pizzaReady = true; };
+pizzaImg.src = "pizza.png";
+
+const backgroundImg = new Image();
+let backgroundReady = false;
+backgroundImg.onload = () => { backgroundReady = true; };
+backgroundImg.src = "background.png";
+
 // ---------- Constants ----------
 const LOGICAL_W = 540;
 const LOGICAL_H = 960;
@@ -72,6 +90,15 @@ const PAD_CENTER_Y = LOGICAL_H - PAD_H / 2;
 
 // Field bounds for entities (slight inset)
 const FIELD_INSET = 30;
+
+// Street/road zone: Thomas (and food/cafes) can only move within this rectangle.
+// Roughly the lower 60% of the canvas, centered horizontally — matches the road
+// area in background.png, keeping Thomas off the sidewalks/buildings.
+const ROAD_TOP = Math.round(LOGICAL_H * 0.40);              // 384
+const ROAD_BOTTOM = FIELD_BOTTOM;                            // 720 (still above launcher pad)
+const ROAD_INSET_X = 70;                                     // horizontal inset on each side
+const ROAD_LEFT = ROAD_INSET_X;                              // 70
+const ROAD_RIGHT = LOGICAL_W - ROAD_INSET_X;                 // 470
 
 // Weight thresholds
 const WEIGHT_START = 95;
@@ -97,6 +124,14 @@ const SHOT_RADIUS = 14;
 const FOOD_BASE_INTERVAL = 1.5;
 const FOOD_RADIUS = 24;
 const FOOD_MAX_ONFIELD = 12;
+
+// Power-up tuning (golden Ozempic 2mg syringe)
+const POWERUP_INTERVAL = 10;           // seconds between spawns
+const POWERUP_RADIUS = 26;
+const POWERUP_LIFETIME = 10;           // disappears if not collected
+const RAPID_FIRE_DURATION = 10;        // seconds of rapid fire after pickup
+const RAPID_FIRE_COOLDOWN_MS = 80;     // machine-gun pace cooldown
+const POWERUP_GOLD = "#FFD700";
 
 // Cafe tuning
 const CAFE_BASE_INTERVAL_MIN = 12;
@@ -185,7 +220,7 @@ window.addEventListener("resize", resize);
 resize();
 
 // ---------- Input ----------
-const input = { tapped: false, tapX: 0, tapY: 0 };
+const input = { tapped: false, tapX: 0, tapY: 0, held: false };
 
 function screenToLogical(clientX, clientY) {
   const rect = canvas.getBoundingClientRect();
@@ -200,17 +235,30 @@ canvas.addEventListener("touchstart", (e) => {
     const t = e.touches[0];
     const p = screenToLogical(t.clientX, t.clientY);
     input.tapped = true;
+    input.held = true;
     input.tapX = p.x;
     input.tapY = p.y;
   }
 }, { passive: false });
 
+canvas.addEventListener("touchend", (e) => {
+  e.preventDefault();
+  if (e.touches.length === 0) input.held = false;
+}, { passive: false });
+
+canvas.addEventListener("touchcancel", (e) => {
+  if (e.touches.length === 0) input.held = false;
+});
+
 canvas.addEventListener("mousedown", (e) => {
   const p = screenToLogical(e.clientX, e.clientY);
   input.tapped = true;
+  input.held = true;
   input.tapX = p.x;
   input.tapY = p.y;
 });
+
+window.addEventListener("mouseup", () => { input.held = false; });
 
 // ---------- Game state ----------
 const STATE = {
@@ -228,7 +276,7 @@ function newGame(level = 1) {
     time: 0,
     thomas: {
       x: LOGICAL_W / 2,
-      y: (FIELD_TOP + FIELD_BOTTOM) / 2,
+      y: (ROAD_TOP + ROAD_BOTTOM) / 2,
       angle: Math.random() * Math.PI * 2,
       changeDirTimer: randRange(2, 4),
       weight: WEIGHT_START,
@@ -241,6 +289,9 @@ function newGame(level = 1) {
     foods: [],
     foodSpawnTimer: 0,
     foodInterval: foodIntervalForLevel(level),
+    powerups: [],
+    powerupSpawnTimer: POWERUP_INTERVAL,
+    rapidFireRemaining: 0,
     projectiles: [],
     pendulum: {
       angle: 0,
@@ -297,11 +348,11 @@ function spawnFood() {
   else kind = "hamburger";
   const kg = kind === "kapsalon" ? 3 : kind === "pizza" ? 2 : 1;
 
-  // pick a position in the field, but not too close to Thomas
+  // pick a position on the road, but not too close to Thomas
   let x, y;
   for (let tries = 0; tries < 12; tries++) {
-    x = randRange(FIELD_INSET + 20, LOGICAL_W - FIELD_INSET - 20);
-    y = randRange(FIELD_TOP + 60, FIELD_BOTTOM - 30);
+    x = randRange(ROAD_LEFT + 20, ROAD_RIGHT - 20);
+    y = randRange(ROAD_TOP + 20, ROAD_BOTTOM - 30);
     const dx = x - game.thomas.x, dy = y - game.thomas.y;
     if (dx * dx + dy * dy > 70 * 70) break;
   }
@@ -314,15 +365,59 @@ function spawnFood() {
   });
 }
 
+// ---------- Power-up (golden Ozempic 2mg) ----------
+function spawnPowerup() {
+  const x = randRange(ROAD_LEFT + 20, ROAD_RIGHT - 20);
+  const y = randRange(ROAD_TOP + 20, ROAD_BOTTOM - 30);
+  game.powerups.push({
+    x, y,
+    r: POWERUP_RADIUS,
+    spawnT: 0,
+    bobPhase: Math.random() * Math.PI * 2
+  });
+}
+
+function updatePowerups(dt) {
+  // Spawn timer
+  game.powerupSpawnTimer -= dt;
+  if (game.powerupSpawnTimer <= 0) {
+    spawnPowerup();
+    game.powerupSpawnTimer = POWERUP_INTERVAL;
+  }
+  // Lifetime + pickup
+  const t = game.thomas;
+  const tR = thomasCollideR(t.weight);
+  for (let i = game.powerups.length - 1; i >= 0; i--) {
+    const p = game.powerups[i];
+    p.bobPhase += dt * 3;
+    p.spawnT += dt;
+    const dx = p.x - t.x, dy = p.y - t.y;
+    if (dx * dx + dy * dy < (tR + p.r * 0.6) * (tR + p.r * 0.6)) {
+      game.rapidFireRemaining = RAPID_FIRE_DURATION;
+      game.pendulum.cooldownMs = 0;
+      spawnMunchParticles(p.x, p.y - 20);
+      game.powerups.splice(i, 1);
+      continue;
+    }
+    if (p.spawnT >= POWERUP_LIFETIME) {
+      game.powerups.splice(i, 1);
+    }
+  }
+  // Rapid-fire countdown
+  if (game.rapidFireRemaining > 0) {
+    game.rapidFireRemaining = Math.max(0, game.rapidFireRemaining - dt);
+  }
+}
+
 // ---------- Cafe ----------
 function spawnCafe() {
-  // pick rest position somewhere in field
-  const restX = randRange(FIELD_INSET + CAFE_W / 2 + 20, LOGICAL_W - FIELD_INSET - CAFE_W / 2 - 20);
-  const restY = randRange(FIELD_TOP + 40, FIELD_BOTTOM - CAFE_H - 20);
+  // pick rest position on the road so Thomas can walk into it
+  const restX = randRange(ROAD_LEFT + CAFE_W / 2 + 10, ROAD_RIGHT - CAFE_W / 2 - 10);
+  const restY = randRange(ROAD_TOP + 20, ROAD_BOTTOM - CAFE_H - 20);
   // pick entry edge (top or side, not bottom because launcher is there)
   const edge = Math.floor(Math.random() * 3); // 0 top, 1 left, 2 right
   let startX, startY;
-  if (edge === 0) { startX = restX; startY = FIELD_TOP - CAFE_H - 10; }
+  if (edge === 0) { startX = restX; startY = ROAD_TOP - CAFE_H - 10; }
   else if (edge === 1) { startX = -CAFE_W - 10; startY = restY; }
   else { startX = LOGICAL_W + 10; startY = restY; }
   game.cafe = {
@@ -401,12 +496,12 @@ function updatePlaying(dt) {
   if (Math.abs(nvx) > 5) t.facing = nvx > 0 ? 1 : -1;
   else t.facing = 0;
 
-  // Bounce off field bounds
+  // Bounce off road bounds (keeps Thomas on the street, off the sidewalks)
   const r = thomasCollideR(t.weight);
-  if (t.x - r < FIELD_INSET) { t.x = FIELD_INSET + r; t.angle = Math.PI - t.angle; }
-  if (t.x + r > LOGICAL_W - FIELD_INSET) { t.x = LOGICAL_W - FIELD_INSET - r; t.angle = Math.PI - t.angle; }
-  if (t.y - r < FIELD_TOP + 30) { t.y = FIELD_TOP + 30 + r; t.angle = -t.angle; }
-  if (t.y + r > FIELD_BOTTOM - 10) { t.y = FIELD_BOTTOM - 10 - r; t.angle = -t.angle; }
+  if (t.x - r < ROAD_LEFT) { t.x = ROAD_LEFT + r; t.angle = Math.PI - t.angle; }
+  if (t.x + r > ROAD_RIGHT) { t.x = ROAD_RIGHT - r; t.angle = Math.PI - t.angle; }
+  if (t.y - r < ROAD_TOP) { t.y = ROAD_TOP + r; t.angle = -t.angle; }
+  if (t.y + r > ROAD_BOTTOM - 10) { t.y = ROAD_BOTTOM - 10 - r; t.angle = -t.angle; }
 
   // anim
   if (t.munchTimer > 0) t.munchTimer -= dt;
@@ -418,19 +513,22 @@ function updatePlaying(dt) {
   // Pendulum
   updatePendulumOnly(dt);
 
-  // Shoot
-  if (input.tapped && game.pendulum.cooldownMs <= 0 && !game.cutscene) {
+  // Shoot — during rapid-fire, auto-fire while button is held with very short cooldown
+  const isRapid = game.rapidFireRemaining > 0;
+  const fireRequested = isRapid ? input.held : input.tapped;
+  if (fireRequested && game.pendulum.cooldownMs <= 0 && !game.cutscene) {
     const ang = game.pendulum.angle - Math.PI / 2;
     const vx = Math.cos(ang) * SHOT_SPEED;
     const vy = Math.sin(ang) * SHOT_SPEED;
     const x0 = PAD_CENTER_X + Math.cos(ang) * PEND_LEN;
     const y0 = PAD_CENTER_Y + Math.sin(ang) * PEND_LEN;
     game.projectiles.push({ x: x0, y: y0, vx, vy, r: SHOT_RADIUS, ang });
-    game.pendulum.cooldownMs = SHOT_COOLDOWN_MS;
+    game.pendulum.cooldownMs = isRapid ? RAPID_FIRE_COOLDOWN_MS : SHOT_COOLDOWN_MS;
   }
 
   updateProjectiles(dt);
   updateFoodsBob(dt);
+  updatePowerups(dt);
   checkFoodEats();
 
   // Food spawn
@@ -455,10 +553,16 @@ function updatePlaying(dt) {
   else if (t.weight <= WEIGHT_WIN) triggerLevelClear();
 }
 
+const FOOD_LIFETIME = 10; // seconds before uncollected food disappears
+
 function updateFoodsBob(dt) {
-  for (const f of game.foods) {
+  for (let i = game.foods.length - 1; i >= 0; i--) {
+    const f = game.foods[i];
     f.bobPhase += dt * 3;
     f.spawnT += dt;
+    if (f.spawnT >= FOOD_LIFETIME) {
+      game.foods.splice(i, 1);
+    }
   }
 }
 
@@ -701,16 +805,17 @@ function render() {
   }
 
   drawBackground();
-  drawField();
 
   // collect z-sorted entities
   const entities = [];
   for (const f of game.foods) entities.push({ kind: "food", obj: f, sortY: f.y + f.r });
+  for (const p of game.powerups) entities.push({ kind: "powerup", obj: p, sortY: p.y + p.r });
   if (game.cafe) entities.push({ kind: "cafe", obj: game.cafe, sortY: game.cafe.y + CAFE_H });
   entities.push({ kind: "thomas", obj: game.thomas, sortY: game.thomas.y });
   entities.sort((a, b) => a.sortY - b.sortY);
   for (const e of entities) {
     if (e.kind === "food") drawFood(e.obj);
+    else if (e.kind === "powerup") drawPowerup(e.obj);
     else if (e.kind === "cafe") drawCafe(e.obj);
     else if (e.kind === "thomas") drawThomas(e.obj);
   }
@@ -732,8 +837,12 @@ function render() {
 }
 
 function drawBackground() {
-  ctx.fillStyle = C.sky;
-  ctx.fillRect(0, 0, LOGICAL_W, LOGICAL_H);
+  if (backgroundReady) {
+    ctx.drawImage(backgroundImg, 0, 0, LOGICAL_W, LOGICAL_H);
+  } else {
+    ctx.fillStyle = C.sky;
+    ctx.fillRect(0, 0, LOGICAL_W, LOGICAL_H);
+  }
 }
 
 function drawField() {
@@ -812,6 +921,9 @@ function drawBush(x, y) {
 function drawFood(f) {
   const bob = Math.sin(f.bobPhase) * 2;
   const scaleIn = clamp(f.spawnT / 0.25, 0, 1);
+  // Fade out in the final second before timeout
+  const fade = clamp((FOOD_LIFETIME - f.spawnT) / 1, 0, 1);
+  ctx.globalAlpha = fade;
   // shadow
   ctx.fillStyle = C.shadow;
   ctx.beginPath();
@@ -823,13 +935,19 @@ function drawFood(f) {
   ctx.scale(scaleIn, scaleIn);
   drawFoodSprite(f.kind, f.r);
   ctx.restore();
+  ctx.globalAlpha = 1;
 }
 
 function drawFoodSprite(kind, r) {
   ctx.strokeStyle = C.outline;
   ctx.lineWidth = 3;
   if (kind === "hamburger") {
-    // bun bottom
+    if (hamburgerReady) {
+      const s = r * 2.2;
+      ctx.drawImage(hamburgerImg, -s / 2, -s / 2, s, s);
+      return;
+    }
+    // bun bottom (fallback procedural)
     ctx.fillStyle = C.hamBun;
     ctx.beginPath(); ctx.arc(0, r * 0.4, r, 0, Math.PI, false); ctx.closePath();
     ctx.fill(); ctx.stroke();
@@ -845,6 +963,11 @@ function drawFoodSprite(kind, r) {
     ctx.beginPath(); ctx.arc(0, -r * 0.7, 2, 0, Math.PI * 2); ctx.fill();
     ctx.beginPath(); ctx.arc(r * 0.4, -r * 0.6, 2, 0, Math.PI * 2); ctx.fill();
   } else if (kind === "pizza") {
+    if (pizzaReady) {
+      const s = r * 2.2;
+      ctx.drawImage(pizzaImg, -s / 2, -s / 2, s, s);
+      return;
+    }
     ctx.beginPath();
     ctx.moveTo(-r, r * 0.6); ctx.lineTo(r, r * 0.6); ctx.lineTo(0, -r); ctx.closePath();
     ctx.fillStyle = C.pizzaSauce; ctx.fill();
@@ -873,6 +996,72 @@ function drawFoodSprite(kind, r) {
     ctx.fillRect(-r + 8, -r * 0.4, 5, 4);
     ctx.fillRect(r - 12, -r * 0.4, 5, 4);
   }
+}
+
+function drawPowerup(p) {
+  const bob = Math.sin(p.bobPhase) * 3;
+  const scaleIn = clamp(p.spawnT / 0.25, 0, 1);
+  const fade = clamp((POWERUP_LIFETIME - p.spawnT) / 1, 0, 1);
+  ctx.globalAlpha = fade;
+
+  // Pulsing golden glow halo behind the syringe
+  const pulse = 0.5 + 0.5 * Math.sin(game.time * 6);
+  const glowR = p.r * (1.6 + pulse * 0.4);
+  const grad = ctx.createRadialGradient(p.x, p.y - 6 + bob, 4, p.x, p.y - 6 + bob, glowR);
+  grad.addColorStop(0, "rgba(255, 215, 0, 0.55)");
+  grad.addColorStop(1, "rgba(255, 215, 0, 0)");
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.arc(p.x, p.y - 6 + bob, glowR, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Shadow
+  ctx.fillStyle = C.shadow;
+  ctx.beginPath();
+  ctx.ellipse(p.x, p.y + p.r - 4, p.r * 0.7, 5, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Golden syringe (mirrors drawSyringe shape, recolored gold)
+  ctx.save();
+  ctx.translate(p.x, p.y - 6 + bob);
+  ctx.scale(scaleIn, scaleIn);
+  ctx.strokeStyle = C.outline;
+  ctx.lineWidth = 3;
+  // needle
+  ctx.fillStyle = "#E8C200";
+  ctx.beginPath();
+  ctx.moveTo(-2, -42); ctx.lineTo(2, -42); ctx.lineTo(2, -22); ctx.lineTo(-2, -22);
+  ctx.closePath();
+  ctx.fill(); ctx.stroke();
+  // needle tip
+  ctx.beginPath();
+  ctx.moveTo(0, -46); ctx.lineTo(3, -42); ctx.lineTo(-3, -42);
+  ctx.closePath();
+  ctx.fillStyle = "#D4A800";
+  ctx.fill(); ctx.stroke();
+  // cylinder (gold)
+  ctx.fillStyle = POWERUP_GOLD;
+  ctx.beginPath();
+  ctx.rect(-10, -22, 20, 30);
+  ctx.fill(); ctx.stroke();
+  // darker gold band
+  ctx.fillStyle = "#E8B800";
+  ctx.beginPath();
+  ctx.rect(-10, -16, 20, 18);
+  ctx.fill(); ctx.stroke();
+  // "2mg" label
+  ctx.fillStyle = "#3A2A00";
+  ctx.font = "900 9px Arial Black, Impact, sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText("2mg", 0, -7);
+  // plunger
+  ctx.fillStyle = "#B8860B";
+  ctx.beginPath(); ctx.rect(-8, 8, 16, 6); ctx.fill(); ctx.stroke();
+  ctx.beginPath(); ctx.rect(-3, 14, 6, 10); ctx.fill(); ctx.stroke();
+  ctx.restore();
+
+  ctx.globalAlpha = 1;
 }
 
 function drawCafe(c) {
@@ -2134,7 +2323,23 @@ function drawPad() {
   ctx.beginPath();
   ctx.rect(-4, -PEND_LEN, 8, PEND_LEN);
   ctx.fill(); ctx.stroke();
-  if (game.pendulum.cooldownMs > 0) ctx.globalAlpha = 0.4;
+
+  // Pulsing golden glow during rapid-fire (fades out in last 0.5s)
+  if (game.rapidFireRemaining > 0) {
+    const fade = clamp(game.rapidFireRemaining / 0.5, 0, 1);
+    const pulse = 0.5 + 0.5 * Math.sin(game.time * 12);
+    const glowR = 38 + pulse * 12;
+    const grad = ctx.createRadialGradient(0, -PEND_LEN, 4, 0, -PEND_LEN, glowR);
+    grad.addColorStop(0, "rgba(255, 215, 0, " + (0.85 * fade) + ")");
+    grad.addColorStop(0.6, "rgba(255, 215, 0, " + (0.35 * fade) + ")");
+    grad.addColorStop(1, "rgba(255, 215, 0, 0)");
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(0, -PEND_LEN, glowR, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  if (game.pendulum.cooldownMs > 0 && !(game.rapidFireRemaining > 0)) ctx.globalAlpha = 0.4;
   drawSyringe(0, -PEND_LEN, 1.1, true);
   ctx.globalAlpha = 1;
   ctx.restore();
