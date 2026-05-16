@@ -13,7 +13,6 @@ COPY thomas-arm-r.png /usr/share/nginx/html/thomas-arm-r.png
 COPY thomas-arm-shoot.png /usr/share/nginx/html/thomas-arm-shoot.png
 COPY thomas-leg-l.png /usr/share/nginx/html/thomas-leg-l.png
 COPY thomas-leg-r.png /usr/share/nginx/html/thomas-leg-r.png
-COPY thomas-head.png /usr/share/nginx/html/thomas-head.png
 COPY lvl-eindhoven.png /usr/share/nginx/html/lvl-eindhoven.png
 COPY lvl-amsterdam.png /usr/share/nginx/html/lvl-amsterdam.png
 COPY lvl-dublin.png /usr/share/nginx/html/lvl-dublin.png
