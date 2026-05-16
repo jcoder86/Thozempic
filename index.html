@@ -134,7 +134,7 @@ for (const [key, src] of ASSET_LIST) {
     if (assetsLoaded >= assetsTotal) markAllAssetsReady();
   };
   img.onload = tick;
-  img.onerror = () => { console.warn("Asset failed to load:", src); tick(); };
+  img.onerror = () => { console.error("Asset failed to load:", key, src); tick(); };
   img.src = src;
 }
 
@@ -1487,13 +1487,14 @@ function drawThomasNormal(x, y, halfW, t) {
 // Render order (back to front, every frame):
 //   1. back leg  2. back arm  3. torso  4. front leg  5. front arm  6. head
 // Pivots: arms/legs top-center (= shoulder/hip), head fixed above torso.
-const BODY_LEG_H       = 56;
-const BODY_LEG_W       = 28;
+// Limb widths are derived from each sprite's natural aspect ratio so the
+// artwork isn't squashed; only heights are fixed proportions of the body.
+const BODY_TOTAL_H     = 280;                       // overall character height
+const BODY_LEG_H       = Math.round(BODY_TOTAL_H * 0.45);  // 126
+const BODY_ARM_H       = Math.round(BODY_TOTAL_H * 0.35);  // 98
 const BODY_TORSO_H     = 92;
 const BODY_TORSO_W_MIN = 88;
 const BODY_TORSO_W_MAX = 140;
-const BODY_ARM_H       = 78;
-const BODY_ARM_W       = 24;
 const BODY_HEAD_H      = 76;
 const BODY_HEAD_W      = 76;
 const BODY_HIP_DX      = 14;
@@ -1509,13 +1510,15 @@ function torsoImgForWeight(weight, isShoot) {
   return assets.torsoDik;
 }
 
-function drawLimb(img, pivotX, pivotY, w, h, swing) {
-  if (!img) return;
+function drawLimb(img, pivotX, pivotY, targetH, swing) {
+  if (!img || !img.naturalWidth || !img.naturalHeight) return;
+  // Preserve the sprite's aspect ratio: derive width from natural dimensions.
+  const w = targetH * (img.naturalWidth / img.naturalHeight);
   ctx.save();
   ctx.translate(pivotX, pivotY);
   ctx.rotate(swing);
   // Pivot is top-center: image hangs straight down from the rotation point.
-  ctx.drawImage(img, -w / 2, 0, w, h);
+  ctx.drawImage(img, -w / 2, 0, w, targetH);
   ctx.restore();
 }
 
@@ -1560,15 +1563,15 @@ function drawThomasBody(x, y, t) {
   const backArmImg  = assets.armL;
 
   // 1. back leg (left)
-  drawLimb(assets.legL, -BODY_HIP_DX, hipY, BODY_LEG_W, BODY_LEG_H, swingLegL);
+  drawLimb(assets.legL, -BODY_HIP_DX, hipY, BODY_LEG_H, swingLegL);
   // 2. back arm (left)
-  drawLimb(backArmImg, -BODY_SHOULDER_DX, shoulderY, BODY_ARM_W, BODY_ARM_H, swingArmL);
+  drawLimb(backArmImg, -BODY_SHOULDER_DX, shoulderY, BODY_ARM_H, swingArmL);
   // 3. torso (centered horizontally; top at shoulder line)
   if (torsoImg) ctx.drawImage(torsoImg, -torsoW / 2, shoulderY, torsoW, BODY_TORSO_H);
   // 4. front leg (right)
-  drawLimb(assets.legR, BODY_HIP_DX, hipY, BODY_LEG_W, BODY_LEG_H, swingLegR);
+  drawLimb(assets.legR, BODY_HIP_DX, hipY, BODY_LEG_H, swingLegR);
   // 5. front arm — shoot pose freezes the swing; otherwise normal R-arm swing.
-  drawLimb(frontArmImg, BODY_SHOULDER_DX, shoulderY, BODY_ARM_W, BODY_ARM_H, isShoot ? 0 : swingArmR);
+  drawLimb(frontArmImg, BODY_SHOULDER_DX, shoulderY, BODY_ARM_H, isShoot ? 0 : swingArmR);
   // 6. head — no rotation, fixed above torso center
   if (assets.thomasHead) ctx.drawImage(assets.thomasHead, -BODY_HEAD_W / 2, headTopY, BODY_HEAD_W, BODY_HEAD_H);
 
