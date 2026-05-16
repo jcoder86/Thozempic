@@ -1487,18 +1487,20 @@ function drawThomasNormal(x, y, halfW, t) {
 // Render order (back to front, every frame):
 //   1. back leg  2. back arm  3. torso  4. front leg  5. front arm  6. head
 // Pivots: arms/legs top-center (= shoulder/hip), head fixed above torso.
-// Limb widths are derived from each sprite's natural aspect ratio so the
-// artwork isn't squashed; only heights are fixed proportions of the body.
-const BODY_TOTAL_H     = 280;                       // overall character height
-const BODY_LEG_H       = Math.round(BODY_TOTAL_H * 0.45);  // 126
-const BODY_ARM_H       = Math.round(BODY_TOTAL_H * 0.35);  // 98
+// The limb PNGs are 1254×1254 squares with transparent padding around a
+// centered single-limb sprite; widths are derived from natural aspect ratio
+// (which is 1:1 here, so the limb width equals its height). Hip/shoulder
+// spreads are wide enough that the back limb peeks out past the torso edge.
+const BODY_TOTAL_H     = 220;
+const BODY_LEG_H       = Math.round(BODY_TOTAL_H * 0.45);  // 99
+const BODY_ARM_H       = Math.round(BODY_TOTAL_H * 0.35);  // 77
 const BODY_TORSO_H     = 92;
 const BODY_TORSO_W_MIN = 88;
 const BODY_TORSO_W_MAX = 140;
 const BODY_HEAD_H      = 76;
 const BODY_HEAD_W      = 76;
-const BODY_HIP_DX      = 14;
-const BODY_SHOULDER_DX = 26;
+const BODY_HIP_DX      = 30;
+const BODY_SHOULDER_DX = 48;
 const BODY_HEAD_GAP    = 4;
 const BODY_STRIDE_PERIOD = 0.5; // 500ms full cycle
 const BODY_SWING_MAX_DEG = 20;
