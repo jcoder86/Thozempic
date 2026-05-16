@@ -126,16 +126,36 @@ function markAllAssetsReady() {
   backgroundReady = true;
 }
 
+// Hidden offscreen canvas used to warm up GPU texture upload per image once
+// it's decoded, so the first visible frame doesn't pay the upload cost.
+const warmupCanvas = document.createElement("canvas");
+const warmupCtx = warmupCanvas.getContext("2d");
+
+function tickAssetLoaded() {
+  assetsLoaded++;
+  if (assetsLoaded >= assetsTotal) markAllAssetsReady();
+}
+
 for (const [key, src] of ASSET_LIST) {
   const img = new Image();
   assets[key] = img;
-  const tick = () => {
-    assetsLoaded++;
-    if (assetsLoaded >= assetsTotal) markAllAssetsReady();
-  };
-  img.onload = tick;
-  img.onerror = () => { console.error("Asset failed to load:", key, src); tick(); };
+  img.onerror = () => { console.error("Asset failed to load:", key, src); tickAssetLoaded(); };
   img.src = src;
+  // Use Image.decode() so we wait for the bitmap to be fully decoded — onload
+  // only fires when bytes are fetched, not when pixels are ready to render.
+  const finalize = () => {
+    try {
+      warmupCanvas.width = img.naturalWidth || 1;
+      warmupCanvas.height = img.naturalHeight || 1;
+      warmupCtx.drawImage(img, 0, 0);
+    } catch (e) { /* warmup is best-effort */ }
+    tickAssetLoaded();
+  };
+  if (typeof img.decode === "function") {
+    img.decode().then(finalize).catch(finalize);
+  } else {
+    img.onload = finalize;
+  }
 }
 
 // Safety: don't block startup forever if a file is missing or stuck.
@@ -198,10 +218,10 @@ const FOOD_RADIUS = 24;
 const FOOD_MAX_ONFIELD = 12;
 
 // Power-up tuning (golden Ozempic 2mg syringe)
-const POWERUP_INTERVAL = 10;           // seconds between spawns
+const POWERUP_INTERVAL = 14;           // seconds between spawns (drop-rate -30%)
 const POWERUP_RADIUS = 26;
 const POWERUP_LIFETIME = 10;           // disappears if not collected
-const RAPID_FIRE_DURATION = 10;        // seconds of rapid fire after pickup
+const RAPID_FIRE_DURATION = 4;         // seconds of rapid fire after pickup
 const RAPID_FIRE_COOLDOWN_MS = 80;     // machine-gun pace cooldown
 const POWERUP_GOLD = "#FFD700";
 
@@ -1519,8 +1539,8 @@ const BODY_TORSO_W_MIN = 88;
 const BODY_TORSO_W_MAX = 140;
 const BODY_HEAD_H      = 76;
 const BODY_HEAD_W      = 76;
-const BODY_HIP_DX      = 30;
-const BODY_SHOULDER_DX = 48;
+const BODY_HIP_DX      = 16;
+const BODY_SHOULDER_DX = 34;
 const BODY_HEAD_GAP    = 4;
 const BODY_STRIDE_PERIOD = 0.5; // 500ms full cycle
 const BODY_SWING_MAX_DEG = 20;
