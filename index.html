@@ -28,6 +28,11 @@
     align-items: center;
     justify-content: center;
   }
+  #game-wrapper {
+    position: relative;
+    display: inline-block;
+    line-height: 0;
+  }
   #game {
     display: block;
     background: #7FCFEA;
@@ -35,10 +40,37 @@
     box-shadow: 0 0 30px rgba(0,0,0,0.4);
     touch-action: none;
   }
+  #name-input {
+    position: absolute;
+    left: 50%;
+    top: 58%;
+    transform: translate(-50%, -50%);
+    width: 62%;
+    padding: 14px 18px;
+    font-family: 'Arial Black', Impact, sans-serif;
+    font-size: 22px;
+    font-weight: 900;
+    text-align: center;
+    color: #1A1A1A;
+    background: #fff;
+    border: 4px solid #1A1A1A;
+    border-radius: 14px;
+    outline: none;
+    display: none;
+    box-shadow: 0 6px 0 rgba(0,0,0,0.25);
+  }
+  #name-input.visible { display: block; }
+  #name-input::placeholder {
+    color: #888;
+    font-weight: 700;
+  }
 </style>
 </head>
 <body>
+<div id="game-wrapper">
 <canvas id="game"></canvas>
+<input id="name-input" type="text" placeholder="Enter your name" maxlength="20" autocomplete="off" />
+</div>
 <script>
 // Plak deze constante bovenaan je <script> blok in index.html.
 // De base64-string bevat de cartoon-foto van Thomas' hoofd (256x256, transparante achtergrond).
@@ -49,31 +81,71 @@ const THOMAS_HEAD_DATA_URI = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAQAA
 <script>
 "use strict";
 
-// ---------- Thomas head image (default head) ----------
-const thomasHeadImg = new Image();
+// ---------- Asset preloader ----------
+// Single registry: every image used by the game. Rendering waits on
+// `assetsReady` before the game proper draws — a loading bar is shown until then.
+const assets = {};
+const ASSET_LIST = [
+  ["thomasHead", typeof THOMAS_HEAD_DATA_URI === "string" ? THOMAS_HEAD_DATA_URI : "thomas-head.png"],
+  ["hamburger",  "hamburger.png"],
+  ["pizza",      "pizza.png"],
+  ["icon",       "icon.png"],
+  ["kroeg",      "kroeg.png"],
+  ["torsoSlim",  "thomas-torso.png"],
+  ["torsoMid",   "thomas-torso-midden.png"],
+  ["torsoDik",   "thomas-torso-dik.png"],
+  ["torsoShoot", "thomas-torso-shoot.png"],
+  ["armL",       "thomas-arm-l.png"],
+  ["armR",       "thomas-arm-r.png"],
+  ["armShoot",   "thomas-arm-shoot.png"],
+  ["legL",       "thomas-leg-l.png"],
+  ["legR",       "thomas-leg-r.png"],
+  ["bgLvl1",     "lvl-eindhoven.png"],
+  ["bgLvl2",     "lvl-amsterdam.png"],
+  ["bgLvl3",     "lvl-dublin.png"],
+  ["bgLvl4",     "lvl-denhaag.png"],
+  ["bgLvl5",     "lvl-basicfit.png"],
+  ["bgLvl6",     "lvl-hell.png"]
+];
+
+let assetsLoaded = 0;
+const assetsTotal = ASSET_LIST.length;
+let assetsReady = false;
+
+// Backwards-compatible aliases for code that pre-dates the registry.
 let thomasHeadReady = false;
-thomasHeadImg.onload = () => { thomasHeadReady = true; };
-if (typeof THOMAS_HEAD_DATA_URI === "string") {
-  thomasHeadImg.src = THOMAS_HEAD_DATA_URI;
-} else {
-  thomasHeadImg.src = "thomas-head.png";
+let hamburgerReady = false;
+let pizzaReady = false;
+let backgroundReady = false;
+
+function markAllAssetsReady() {
+  assetsReady = true;
+  thomasHeadReady = true;
+  hamburgerReady = true;
+  pizzaReady = true;
+  backgroundReady = true;
 }
 
-// ---------- Sprite + background images ----------
-const hamburgerImg = new Image();
-let hamburgerReady = false;
-hamburgerImg.onload = () => { hamburgerReady = true; };
-hamburgerImg.src = "hamburger.png";
+for (const [key, src] of ASSET_LIST) {
+  const img = new Image();
+  assets[key] = img;
+  const tick = () => {
+    assetsLoaded++;
+    if (assetsLoaded >= assetsTotal) markAllAssetsReady();
+  };
+  img.onload = tick;
+  img.onerror = () => { console.warn("Asset failed to load:", src); tick(); };
+  img.src = src;
+}
 
-const pizzaImg = new Image();
-let pizzaReady = false;
-pizzaImg.onload = () => { pizzaReady = true; };
-pizzaImg.src = "pizza.png";
+// Safety: don't block startup forever if a file is missing or stuck.
+setTimeout(() => { if (!assetsReady) markAllAssetsReady(); }, 5000);
 
-const backgroundImg = new Image();
-let backgroundReady = false;
-backgroundImg.onload = () => { backgroundReady = true; };
-backgroundImg.src = "background.png";
+// Aliases so existing draw code (thomasHeadImg, hamburgerImg, etc.) keeps working.
+const thomasHeadImg = assets.thomasHead;
+const hamburgerImg  = assets.hamburger;
+const pizzaImg      = assets.pizza;
+const backgroundImg = assets.bgLvl1;   // Step-1 placeholder; per-level wiring in Step 3
 
 // ---------- Constants ----------
 const LOGICAL_W = 540;
@@ -260,6 +332,60 @@ canvas.addEventListener("mousedown", (e) => {
 
 window.addEventListener("mouseup", () => { input.held = false; });
 
+// ---------- Scene state machine (outer) ----------
+// SCENE_START    — name input + PLAY
+// SCENE_GAME     — active gameplay (STATE.PLAYING / STATE.LEVEL_CLEAR live inside)
+// SCENE_GAMEOVER — score breakdown + leaderboard
+const SCENE_START = "start";
+const SCENE_GAME = "game";
+const SCENE_GAMEOVER = "gameover";
+let scene = SCENE_START;
+
+let playerName = "";
+
+const nameInputEl = document.getElementById("name-input");
+function setNameInputVisible(v) {
+  if (!nameInputEl) return;
+  if (v) nameInputEl.classList.add("visible");
+  else nameInputEl.classList.remove("visible");
+}
+if (nameInputEl) {
+  nameInputEl.addEventListener("input", () => {
+    playerName = nameInputEl.value.trim();
+  });
+  nameInputEl.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && playerName.length >= 2) {
+      goToGame();
+    }
+  });
+}
+// Show input immediately while we're on the start screen.
+setNameInputVisible(true);
+
+// PLAY button hit rect (in logical coords) — assigned by drawStartScreen each frame.
+let playButtonRect = null;
+// Play-again button hit rect (game over screen).
+let playAgainRect = null;
+
+function goToStartScreen() {
+  scene = SCENE_START;
+  setNameInputVisible(true);
+  if (nameInputEl) { nameInputEl.value = playerName; nameInputEl.focus(); }
+}
+function goToGame() {
+  if (playerName.length < 2) return;
+  setNameInputVisible(false);
+  scene = SCENE_GAME;
+  newGame(1);
+  gameStartTime = performance.now();
+}
+function goToGameOver() {
+  scene = SCENE_GAMEOVER;
+  setNameInputVisible(false);
+}
+
+let gameStartTime = 0;
+
 // ---------- Game state ----------
 const STATE = {
   PLAYING: "playing",
@@ -293,6 +419,9 @@ function newGame(level = 1) {
     powerupSpawnTimer: POWERUP_INTERVAL,
     rapidFireRemaining: 0,
     projectiles: [],
+    bgFadeT: 1,                 // 0 = previous level still fully visible, 1 = current
+    bgPrevImg: null,            // assigned on level-up so we can crossfade
+    bgCurrImg: null,            // set in render to current level's image
     pendulum: {
       angle: 0,
       phase: 0,
@@ -384,21 +513,11 @@ function updatePowerups(dt) {
     spawnPowerup();
     game.powerupSpawnTimer = POWERUP_INTERVAL;
   }
-  // Lifetime + pickup
-  const t = game.thomas;
-  const tR = thomasCollideR(t.weight);
+  // Lifetime (walk-over no longer triggers — see projectile-hit in updateProjectiles)
   for (let i = game.powerups.length - 1; i >= 0; i--) {
     const p = game.powerups[i];
     p.bobPhase += dt * 3;
     p.spawnT += dt;
-    const dx = p.x - t.x, dy = p.y - t.y;
-    if (dx * dx + dy * dy < (tR + p.r * 0.6) * (tR + p.r * 0.6)) {
-      game.rapidFireRemaining = RAPID_FIRE_DURATION;
-      game.pendulum.cooldownMs = 0;
-      spawnMunchParticles(p.x, p.y - 20);
-      game.powerups.splice(i, 1);
-      continue;
-    }
     if (p.spawnT >= POWERUP_LIFETIME) {
       game.powerups.splice(i, 1);
     }
@@ -409,26 +528,25 @@ function updatePowerups(dt) {
   }
 }
 
+function activateRapidFire(x, y) {
+  game.rapidFireRemaining = RAPID_FIRE_DURATION;
+  game.pendulum.cooldownMs = 0;
+  spawnMunchParticles(x, y - 20);
+}
+
 // ---------- Cafe ----------
+// Kroeg = falling obstacle (replaces the old sliding cafe; same gameplay penalty)
+const KROEG_FALL_SPEED   = 180;   // px/s
+const KROEG_WOBBLE_PERIOD = 0.6;  // s for one full wobble
+const KROEG_WOBBLE_DEG    = 10;   // ± degrees
+
 function spawnCafe() {
-  // pick rest position on the road so Thomas can walk into it
-  const restX = randRange(ROAD_LEFT + CAFE_W / 2 + 10, ROAD_RIGHT - CAFE_W / 2 - 10);
-  const restY = randRange(ROAD_TOP + 20, ROAD_BOTTOM - CAFE_H - 20);
-  // pick entry edge (top or side, not bottom because launcher is there)
-  const edge = Math.floor(Math.random() * 3); // 0 top, 1 left, 2 right
-  let startX, startY;
-  if (edge === 0) { startX = restX; startY = ROAD_TOP - CAFE_H - 10; }
-  else if (edge === 1) { startX = -CAFE_W - 10; startY = restY; }
-  else { startX = LOGICAL_W + 10; startY = restY; }
+  const x = randRange(ROAD_LEFT + CAFE_W / 2 + 10, ROAD_RIGHT - CAFE_W / 2 - 10);
   game.cafe = {
-    x: startX,
-    y: startY,
-    targetX: restX,
-    targetY: restY,
-    state: "sliding_in",
-    timer: CAFE_SLIDE_TIME,
-    stay: randRange(CAFE_STAY_MIN, CAFE_STAY_MAX),
-    entry: edge,
+    x,
+    y: -CAFE_H - 20,        // start above the canvas
+    state: "falling",
+    fallT: 0,
     puffT: 0
   };
 }
@@ -446,13 +564,43 @@ function frame(now) {
 requestAnimationFrame((t) => { last = t; requestAnimationFrame(frame); });
 
 function update(dt) {
+  if (!assetsReady) {
+    input.tapped = false;
+    return;
+  }
+
+  if (scene === SCENE_START) {
+    if (input.tapped && playButtonRect && playerName.length >= 2) {
+      const r = playButtonRect;
+      if (input.tapX >= r.x && input.tapX <= r.x + r.w &&
+          input.tapY >= r.y && input.tapY <= r.y + r.h) {
+        goToGame();
+      }
+    }
+    input.tapped = false;
+    return;
+  }
+
+  if (scene === SCENE_GAMEOVER) {
+    if (input.tapped && playAgainRect) {
+      const r = playAgainRect;
+      if (input.tapX >= r.x && input.tapX <= r.x + r.w &&
+          input.tapY >= r.y && input.tapY <= r.y + r.h) {
+        goToStartScreen();
+      }
+    }
+    input.tapped = false;
+    return;
+  }
+
+  // scene === SCENE_GAME
   game.time += dt;
 
   if (game.state === STATE.PLAYING) {
     updatePlaying(dt);
   } else if (game.state === STATE.LEVEL_CLEAR) {
     updateConfetti(dt);
-    if (input.tapped && game.overlayTimer > 0.4) newGame(game.level + 1);
+    if (input.tapped && game.overlayTimer > 0.4) advanceToNextLevel();
     game.overlayTimer += dt;
   } else if (game.state === STATE.GAME_OVER) {
     updateParticles(dt);
@@ -512,6 +660,11 @@ function updatePlaying(dt) {
 
   // Pendulum
   updatePendulumOnly(dt);
+
+  // Background crossfade
+  if (game.bgFadeT < 1) {
+    game.bgFadeT = Math.min(1, game.bgFadeT + dt / BG_FADE_DURATION);
+  }
 
   // Shoot — during rapid-fire, auto-fire while button is held with very short cooldown
   const isRapid = game.rapidFireRemaining > 0;
@@ -608,6 +761,22 @@ function updateProjectiles(dt) {
       }
     }
 
+    // powerup collision — SHOOT the gold syringe to activate rapid fire
+    let hitPowerup = false;
+    for (let j = game.powerups.length - 1; j >= 0; j--) {
+      const pu = game.powerups[j];
+      const dxp = p.x - pu.x, dyp = p.y - pu.y;
+      const rsum = pu.r + p.r;
+      if (dxp * dxp + dyp * dyp < rsum * rsum) {
+        activateRapidFire(pu.x, pu.y);
+        game.powerups.splice(j, 1);
+        game.projectiles.splice(i, 1);
+        hitPowerup = true;
+        break;
+      }
+    }
+    if (hitPowerup) continue;
+
     // thomas collision (circle around upper body center)
     const tcx = t.x;
     const tcy = t.y - THOMAS_BODY_H * 0.45;
@@ -630,26 +799,12 @@ function updateProjectiles(dt) {
 
 function updateCafe(dt) {
   const c = game.cafe;
-  if (c.state === "sliding_in") {
-    const sx = (c.targetX - c.x) / Math.max(0.01, c.timer);
-    const sy = (c.targetY - c.y) / Math.max(0.01, c.timer);
-    c.x += sx * dt;
-    c.y += sy * dt;
-    c.timer -= dt;
-    if (c.timer <= 0) { c.x = c.targetX; c.y = c.targetY; c.state = "idle"; c.timer = c.stay; }
+  if (c.state === "falling") {
+    c.y += KROEG_FALL_SPEED * dt;
+    c.fallT += dt;
     checkCafeThomasCollision();
-  } else if (c.state === "idle") {
-    c.timer -= dt;
-    if (c.timer <= 0) { c.state = "sliding_out"; c.timer = CAFE_SLIDE_TIME; }
-    checkCafeThomasCollision();
-  } else if (c.state === "sliding_out") {
-    const exit = exitPos(c.entry);
-    const sx = (exit.x - c.x) / Math.max(0.01, c.timer);
-    const sy = (exit.y - c.y) / Math.max(0.01, c.timer);
-    c.x += sx * dt;
-    c.y += sy * dt;
-    c.timer -= dt;
-    if (c.timer <= 0) {
+    // Despawn once it's left the canvas without hitting anything.
+    if (c.y > LOGICAL_H + 100) {
       game.cafe = null;
       game.cafeSpawnTimer = randRange(CAFE_BASE_INTERVAL_MIN, CAFE_BASE_INTERVAL_MAX) / cafeRateMul(game.level);
     }
@@ -660,12 +815,6 @@ function updateCafe(dt) {
       game.cafeSpawnTimer = randRange(CAFE_BASE_INTERVAL_MIN, CAFE_BASE_INTERVAL_MAX) / cafeRateMul(game.level);
     }
   }
-}
-
-function exitPos(entry) {
-  if (entry === 0) return { x: 0, y: FIELD_TOP - CAFE_H - 20 };
-  if (entry === 1) return { x: -CAFE_W - 20, y: 0 };
-  return { x: LOGICAL_W + 20, y: 0 };
 }
 
 function checkCafeThomasCollision() {
@@ -774,11 +923,32 @@ function updateConfetti(dt) {
 }
 
 // ---------- Triggers ----------
+const FINAL_LEVEL = 6;
+const BG_FADE_DURATION = 0.3;  // seconds
+
+function bgImgForLevel(level) {
+  const clamped = Math.min(Math.max(level, 1), FINAL_LEVEL);
+  return assets["bgLvl" + clamped] || assets.bgLvl1;
+}
+
+function advanceToNextLevel() {
+  const prevImg = bgImgForLevel(game.level);
+  newGame(game.level + 1);
+  // newGame resets `game`, so we re-arm the crossfade on the fresh state.
+  game.bgPrevImg = prevImg;
+  game.bgCurrImg = bgImgForLevel(game.level);
+  game.bgFadeT = 0;
+}
+
 function triggerLevelClear() {
   game.state = STATE.LEVEL_CLEAR;
   game.overlayTimer = 0;
   game.confetti = [];
   setHighscoreIfBetter(game.level);
+  if (game.level >= FINAL_LEVEL) {
+    // Final level cleared → straight to game-over scene with win flag.
+    finalizeAndGoToGameOver(true);
+  }
 }
 function triggerGameOver() {
   game.state = STATE.GAME_OVER;
@@ -794,11 +964,76 @@ function triggerGameOver() {
       size: 8
     });
   }
+  finalizeAndGoToGameOver(false);
+}
+
+let lastRunSummary = null;
+
+function loadLeaderboard() {
+  try {
+    const raw = localStorage.getItem("thozempic_scores");
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr : [];
+  } catch (e) { return []; }
+}
+
+function saveLeaderboardWithCurrent() {
+  if (!lastRunSummary) return [];
+  const board = loadLeaderboard();
+  const entry = {
+    name: lastRunSummary.name || "Anon",
+    score: lastRunSummary.total,
+    date: Date.now()
+  };
+  board.push(entry);
+  board.sort((a, b) => b.score - a.score);
+  const trimmed = board.slice(0, 10);
+  try { localStorage.setItem("thozempic_scores", JSON.stringify(trimmed)); }
+  catch (e) { /* localStorage may be unavailable; ignore */ }
+  lastRunSummary.leaderboard = trimmed;
+  lastRunSummary.currentEntryIndex = trimmed.indexOf(entry);
+  return trimmed;
+}
+
+function finalizeAndGoToGameOver(won) {
+  const elapsedSec = (performance.now() - gameStartTime) / 1000;
+  const kgLost = Math.max(0, WEIGHT_START - game.thomas.weight);
+  const levelScore = game.level * 1000;
+  const timeScore = Math.floor(elapsedSec * 10);
+  const kgScore = Math.floor(kgLost * 50);
+  lastRunSummary = {
+    won,
+    levelReached: game.level,
+    seconds: Math.floor(elapsedSec),
+    kgLost: Math.floor(kgLost),
+    levelScore, timeScore, kgScore,
+    total: levelScore + timeScore + kgScore,
+    name: playerName || "Anon"
+  };
+  saveLeaderboardWithCurrent();
+  goToGameOver();
 }
 
 // ---------- Render ----------
 function render() {
   ctx.setTransform(viewScale, 0, 0, viewScale, 0, 0);
+
+  if (!assetsReady) {
+    drawLoadingScreen();
+    return;
+  }
+
+  if (scene === SCENE_START) {
+    drawStartScreen();
+    return;
+  }
+
+  if (scene === SCENE_GAMEOVER) {
+    drawGameOverScreen();
+    return;
+  }
+
   if (game.shakeT > 0) {
     const m = game.shakeT * 20;
     ctx.translate((Math.random() - 0.5) * m, (Math.random() - 0.5) * m);
@@ -836,87 +1071,224 @@ function render() {
   }
 }
 
-function drawBackground() {
-  if (backgroundReady) {
-    ctx.drawImage(backgroundImg, 0, 0, LOGICAL_W, LOGICAL_H);
-  } else {
-    ctx.fillStyle = C.sky;
-    ctx.fillRect(0, 0, LOGICAL_W, LOGICAL_H);
+function drawStartScreen() {
+  // Red diagonal-striped background (mimics icon.png)
+  ctx.fillStyle = "#C8102E";
+  ctx.fillRect(0, 0, LOGICAL_W, LOGICAL_H);
+  ctx.save();
+  ctx.strokeStyle = "rgba(255,255,255,0.10)";
+  ctx.lineWidth = 30;
+  for (let i = -LOGICAL_H; i < LOGICAL_W + LOGICAL_H; i += 70) {
+    ctx.beginPath();
+    ctx.moveTo(i, 0);
+    ctx.lineTo(i + LOGICAL_H, LOGICAL_H);
+    ctx.stroke();
   }
-}
+  ctx.restore();
 
-function drawField() {
-  // tiled plaza
-  const tileSize = 60;
-  for (let y = FIELD_TOP; y < FIELD_BOTTOM; y += tileSize) {
-    for (let x = 0; x < LOGICAL_W; x += tileSize) {
-      const ix = Math.floor(x / tileSize);
-      const iy = Math.floor((y - FIELD_TOP) / tileSize);
-      ctx.fillStyle = (ix + iy) % 2 === 0 ? C.fieldTile1 : C.fieldTile2;
-      ctx.fillRect(x, y, tileSize, tileSize);
-    }
-  }
-  // tile gridlines (subtle)
-  ctx.strokeStyle = "rgba(0,0,0,0.10)";
-  ctx.lineWidth = 1;
-  for (let y = FIELD_TOP; y <= FIELD_BOTTOM; y += tileSize) {
-    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(LOGICAL_W, y); ctx.stroke();
-  }
-  for (let x = 0; x <= LOGICAL_W; x += tileSize) {
-    ctx.beginPath(); ctx.moveTo(x, FIELD_TOP); ctx.lineTo(x, FIELD_BOTTOM); ctx.stroke();
-  }
-  // snackbar wall (background decor at top of field)
-  ctx.fillStyle = "#C58F69";
-  ctx.fillRect(0, FIELD_TOP, LOGICAL_W, 28);
-  ctx.fillStyle = "#A57050";
-  ctx.fillRect(0, FIELD_TOP + 28, LOGICAL_W, 6);
-  ctx.strokeStyle = C.outline;
-  ctx.lineWidth = 3;
-  ctx.beginPath();
-  ctx.moveTo(0, FIELD_TOP + 34);
-  ctx.lineTo(LOGICAL_W, FIELD_TOP + 34);
-  ctx.stroke();
-  // luifel
-  ctx.fillStyle = "#E63946";
-  ctx.fillRect(LOGICAL_W / 2 - 110, FIELD_TOP - 4, 220, 22);
-  ctx.strokeRect(LOGICAL_W / 2 - 110, FIELD_TOP - 4, 220, 22);
-  // sign
-  ctx.fillStyle = "#FFD976";
-  ctx.fillRect(LOGICAL_W / 2 - 80, FIELD_TOP + 18, 160, 18);
-  ctx.strokeRect(LOGICAL_W / 2 - 80, FIELD_TOP + 18, 160, 18);
-  ctx.fillStyle = C.outline;
-  ctx.font = "900 14px Arial Black, Impact, sans-serif";
+  // Title
+  ctx.fillStyle = "#fff";
+  ctx.strokeStyle = "#1A1A1A";
+  ctx.lineWidth = 6;
+  ctx.font = "900 64px Arial Black, Impact, sans-serif";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.fillText("SNACKBAR THOMAS", LOGICAL_W / 2, FIELD_TOP + 27);
+  ctx.strokeText("Thozempic", LOGICAL_W / 2, 130);
+  ctx.fillText("Thozempic", LOGICAL_W / 2, 130);
 
-  // small decorations (bushes)
-  drawBush(45, FIELD_TOP + 55);
-  drawBush(LOGICAL_W - 45, FIELD_TOP + 55);
-  drawBush(35, FIELD_BOTTOM - 30);
-  drawBush(LOGICAL_W - 35, FIELD_BOTTOM - 30);
+  // Head image centered
+  if (assets.thomasHead && assets.thomasHead.complete) {
+    const headSize = 220;
+    ctx.drawImage(
+      assets.thomasHead,
+      LOGICAL_W / 2 - headSize / 2,
+      230,
+      headSize, headSize
+    );
+  }
 
-  // field outline
-  ctx.strokeStyle = C.fieldEdge;
-  ctx.lineWidth = 4;
-  ctx.strokeRect(2, FIELD_TOP + 36, LOGICAL_W - 4, FIELD_BOTTOM - FIELD_TOP - 36);
-  ctx.lineWidth = 3;
-}
+  // PLAY button — drawn below the input. Disabled if name too short.
+  const btnW = 220, btnH = 70;
+  const btnX = LOGICAL_W / 2 - btnW / 2;
+  const btnY = LOGICAL_H - 200;
+  playButtonRect = { x: btnX, y: btnY, w: btnW, h: btnH };
 
-function drawBush(x, y) {
-  ctx.fillStyle = "#3E8B4A";
-  ctx.strokeStyle = C.outline;
-  ctx.lineWidth = 3;
-  ctx.beginPath();
-  ctx.arc(x - 9, y, 13, 0, Math.PI * 2);
-  ctx.arc(x + 9, y - 2, 13, 0, Math.PI * 2);
-  ctx.arc(x, y - 9, 13, 0, Math.PI * 2);
-  ctx.arc(x, y + 4, 12, 0, Math.PI * 2);
+  const enabled = playerName.length >= 2;
+  // shadow
+  ctx.fillStyle = "rgba(0,0,0,0.35)";
+  roundedRect(btnX + 4, btnY + 6, btnW, btnH, 18);
+  ctx.fill();
+  // button body
+  ctx.fillStyle = enabled ? "#FFD700" : "#888";
+  ctx.strokeStyle = "#1A1A1A";
+  ctx.lineWidth = 5;
+  roundedRect(btnX, btnY, btnW, btnH, 18);
   ctx.fill(); ctx.stroke();
-  // highlight
-  ctx.fillStyle = "#5BAB66";
-  ctx.beginPath(); ctx.arc(x - 3, y - 7, 4, 0, Math.PI * 2); ctx.fill();
+  // label
+  ctx.fillStyle = "#1A1A1A";
+  ctx.font = "900 36px Arial Black, Impact, sans-serif";
+  ctx.fillText("PLAY", LOGICAL_W / 2, btnY + btnH / 2 + 2);
+
+  // Hint below
+  if (!enabled) {
+    ctx.fillStyle = "rgba(255,255,255,0.85)";
+    ctx.font = "900 14px Arial Black, Impact, sans-serif";
+    ctx.fillText("Enter at least 2 characters to play", LOGICAL_W / 2, btnY + btnH + 28);
+  }
 }
+
+function drawGameOverScreen() {
+  // Backdrop
+  ctx.fillStyle = "#1a1a1a";
+  ctx.fillRect(0, 0, LOGICAL_W, LOGICAL_H);
+  ctx.fillStyle = "rgba(200, 16, 46, 0.10)";
+  ctx.fillRect(0, 0, LOGICAL_W, LOGICAL_H);
+
+  const s = lastRunSummary || {
+    won: false, levelReached: 0, seconds: 0, kgLost: 0,
+    levelScore: 0, timeScore: 0, kgScore: 0, total: 0,
+    leaderboard: [], currentEntryIndex: -1
+  };
+
+  // Header
+  const headerText = s.won ? "YOU WIN" : "GAME OVER";
+  const headerColor = s.won ? "#3ECF7A" : "#E63946";
+  ctx.fillStyle = headerColor;
+  ctx.strokeStyle = "#1A1A1A";
+  ctx.lineWidth = 6;
+  ctx.font = "900 50px Arial Black, Impact, sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.strokeText(headerText, LOGICAL_W / 2, 60);
+  ctx.fillText(headerText, LOGICAL_W / 2, 60);
+
+  // Score breakdown rows
+  const breakdownY = 120;
+  ctx.font = "900 18px Arial Black, Impact, sans-serif";
+  ctx.fillStyle = "#fff";
+  const rows = [
+    ["Level: " + s.levelReached + " × 1000", s.levelScore],
+    ["Time: "  + s.seconds      + "s × 10", s.timeScore],
+    ["Kg lost: " + s.kgLost     + " × 50",  s.kgScore]
+  ];
+  for (let i = 0; i < rows.length; i++) {
+    const y = breakdownY + i * 28;
+    ctx.textAlign = "left";
+    ctx.fillText(rows[i][0], 50, y);
+    ctx.textAlign = "right";
+    ctx.fillText(String(rows[i][1]), LOGICAL_W - 50, y);
+  }
+  // Total
+  const totalY = breakdownY + rows.length * 28 + 14;
+  ctx.fillStyle = "#FFD700";
+  ctx.font = "900 26px Arial Black, Impact, sans-serif";
+  ctx.textAlign = "left";
+  ctx.fillText("TOTAL", 50, totalY);
+  ctx.textAlign = "right";
+  ctx.fillText(String(s.total), LOGICAL_W - 50, totalY);
+
+  // Leaderboard header
+  const lbHeaderY = totalY + 46;
+  ctx.fillStyle = "#fff";
+  ctx.font = "900 22px Arial Black, Impact, sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText("LEADERBOARD", LOGICAL_W / 2, lbHeaderY);
+
+  // Leaderboard rows
+  const board = s.leaderboard || [];
+  const rowH = 26;
+  const rowsTop = lbHeaderY + 24;
+  ctx.font = "900 16px Arial Black, Impact, sans-serif";
+  for (let i = 0; i < board.length; i++) {
+    const y = rowsTop + i * rowH;
+    const isMe = i === s.currentEntryIndex;
+    if (isMe) {
+      ctx.fillStyle = "rgba(255, 215, 0, 0.22)";
+      ctx.fillRect(30, y - rowH / 2 + 3, LOGICAL_W - 60, rowH - 2);
+    }
+    ctx.fillStyle = isMe ? "#FFD700" : "#fff";
+    ctx.textAlign = "left";
+    const rankLabel = (i === 0 ? "🏆 " : "") + (i + 1);
+    ctx.fillText(rankLabel, 50, y);
+    ctx.fillText(board[i].name, 110, y);
+    ctx.textAlign = "right";
+    ctx.fillText(String(board[i].score), LOGICAL_W - 50, y);
+  }
+
+  // Play Again button
+  const btnW = 240, btnH = 64;
+  const btnX = LOGICAL_W / 2 - btnW / 2;
+  const btnY = LOGICAL_H - 100;
+  playAgainRect = { x: btnX, y: btnY, w: btnW, h: btnH };
+  ctx.fillStyle = "#FFD700";
+  ctx.strokeStyle = "#1A1A1A";
+  ctx.lineWidth = 5;
+  roundedRect(btnX, btnY, btnW, btnH, 18);
+  ctx.fill(); ctx.stroke();
+  ctx.fillStyle = "#1A1A1A";
+  ctx.font = "900 28px Arial Black, Impact, sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText("Play Again", LOGICAL_W / 2, btnY + btnH / 2 + 2);
+}
+
+function drawLoadingScreen() {
+  // Dark backdrop
+  ctx.fillStyle = "#1a1a1a";
+  ctx.fillRect(0, 0, LOGICAL_W, LOGICAL_H);
+
+  // Title
+  ctx.fillStyle = "#fff";
+  ctx.strokeStyle = "#000";
+  ctx.lineWidth = 4;
+  ctx.font = "900 48px Arial Black, Impact, sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.strokeText("THOZEMPIC", LOGICAL_W / 2, LOGICAL_H / 2 - 80);
+  ctx.fillText("THOZEMPIC", LOGICAL_W / 2, LOGICAL_H / 2 - 80);
+
+  // "Loading…" label
+  ctx.fillStyle = "#FFD976";
+  ctx.font = "900 18px Arial Black, Impact, sans-serif";
+  ctx.fillText("Loading…", LOGICAL_W / 2, LOGICAL_H / 2 - 20);
+
+  // Progress bar
+  const barW = 320, barH = 26;
+  const barX = LOGICAL_W / 2 - barW / 2;
+  const barY = LOGICAL_H / 2 + 10;
+  ctx.fillStyle = "#333";
+  ctx.fillRect(barX, barY, barW, barH);
+  ctx.strokeStyle = "#fff";
+  ctx.lineWidth = 3;
+  ctx.strokeRect(barX, barY, barW, barH);
+
+  const progress = clamp(assetsLoaded / assetsTotal, 0, 1);
+  ctx.fillStyle = "#3ECF7A";
+  ctx.fillRect(barX + 3, barY + 3, (barW - 6) * progress, barH - 6);
+
+  // Counter
+  ctx.fillStyle = "#fff";
+  ctx.font = "900 14px Arial Black, Impact, sans-serif";
+  ctx.fillText(assetsLoaded + " / " + assetsTotal, LOGICAL_W / 2, barY + barH + 22);
+}
+
+function drawBackground() {
+  // Resolve current level image lazily — first frame after newGame has no curr image set.
+  if (!game.bgCurrImg) game.bgCurrImg = bgImgForLevel(game.level);
+  const curr = game.bgCurrImg;
+  const prev = game.bgPrevImg;
+  const t = clamp(game.bgFadeT, 0, 1);
+
+  if (prev && t < 1) {
+    ctx.drawImage(prev, 0, 0, LOGICAL_W, LOGICAL_H);
+    ctx.globalAlpha = t;
+    ctx.drawImage(curr, 0, 0, LOGICAL_W, LOGICAL_H);
+    ctx.globalAlpha = 1;
+  } else {
+    ctx.drawImage(curr, 0, 0, LOGICAL_W, LOGICAL_H);
+  }
+}
+
 
 function drawFood(f) {
   const bob = Math.sin(f.bobPhase) * 2;
@@ -1065,89 +1437,29 @@ function drawPowerup(p) {
 }
 
 function drawCafe(c) {
-  const x = c.x - CAFE_W / 2;
-  const y = c.y;
   let a = 1;
   if (c.state === "dying") a = 1 - clamp(c.puffT / 0.3, 0, 1);
   ctx.globalAlpha = a;
-  // shadow
-  ctx.fillStyle = C.shadow;
-  ctx.beginPath();
-  ctx.ellipse(c.x, y + CAFE_H - 4, CAFE_W * 0.5, 10, 0, 0, Math.PI * 2);
-  ctx.fill();
 
-  // facade
-  ctx.fillStyle = C.cafeWood;
-  ctx.strokeStyle = C.outline;
-  ctx.lineWidth = 3;
-  ctx.beginPath();
-  ctx.rect(x, y + 28, CAFE_W, CAFE_H - 28);
-  ctx.fill(); ctx.stroke();
-  // wood vertical planks
-  ctx.strokeStyle = "rgba(0,0,0,0.20)";
-  ctx.lineWidth = 1;
-  for (let i = 1; i < 5; i++) {
-    const px = x + (CAFE_W / 5) * i;
-    ctx.beginPath(); ctx.moveTo(px, y + 30); ctx.lineTo(px, y + CAFE_H - 2); ctx.stroke();
+  ctx.save();
+  // Rotate around the kroeg's visual center.
+  ctx.translate(c.x, c.y + CAFE_H / 2);
+  const wobblePhase = (c.fallT || 0) * (2 * Math.PI / KROEG_WOBBLE_PERIOD);
+  const wobbleRad = Math.sin(wobblePhase) * KROEG_WOBBLE_DEG * Math.PI / 180;
+  ctx.rotate(wobbleRad);
+  if (assets.kroeg) {
+    ctx.drawImage(assets.kroeg, -CAFE_W / 2, -CAFE_H / 2, CAFE_W, CAFE_H);
+  } else {
+    // Fallback box so something still appears if the asset is missing.
+    ctx.fillStyle = "#6B4423";
+    ctx.fillRect(-CAFE_W / 2, -CAFE_H / 2, CAFE_W, CAFE_H);
   }
-  ctx.strokeStyle = C.outline;
-  ctx.lineWidth = 3;
-  // roof triangle
-  ctx.beginPath();
-  ctx.moveTo(x - 10, y + 28);
-  ctx.lineTo(c.x, y);
-  ctx.lineTo(x + CAFE_W + 10, y + 28);
-  ctx.closePath();
-  ctx.fillStyle = C.cafeWoodDark; ctx.fill(); ctx.stroke();
-  // sign
-  ctx.fillStyle = C.cafeGold;
-  ctx.beginPath(); ctx.rect(x + 14, y + 40, CAFE_W - 28, 28); ctx.fill(); ctx.stroke();
-  ctx.fillStyle = C.outline;
-  ctx.font = "900 20px Arial Black, Impact, sans-serif";
-  ctx.textAlign = "center"; ctx.textBaseline = "middle";
-  ctx.fillText("CAFÃ‰", c.x, y + 54);
-  // window
-  ctx.fillStyle = C.cafeWindow;
-  ctx.beginPath(); ctx.rect(x + 18, y + 80, 45, 50); ctx.fill(); ctx.stroke();
-  // window crossbars
-  ctx.beginPath(); ctx.moveTo(x + 18 + 22, y + 80); ctx.lineTo(x + 18 + 22, y + 130); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(x + 18, y + 105); ctx.lineTo(x + 63, y + 105); ctx.stroke();
-  // door
-  ctx.fillStyle = "#3A2418";
-  ctx.beginPath(); ctx.rect(x + 75, y + 80, 40, 70); ctx.fill(); ctx.stroke();
-  // doorknob
-  ctx.fillStyle = C.cafeGold;
-  ctx.beginPath(); ctx.arc(x + 110, y + 116, 3, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
 
   ctx.globalAlpha = 1;
 }
 
 // ---------- Thomas rendering ----------
-const TC = {
-  skin: "#EAC0A4",
-  skinShade: "#C99B7E",
-  skinDeep: "#A87858",
-  skinHigh: "#F5D5BC",
-  hair: "#3A2820",
-  hairShade: "#231510",
-  hairHigh: "#5A3F2F",
-  beard: "#2E1F18",
-  beardEdge: "#180E0A",
-  beardHigh: "#4A3328",
-  shirtRed: "#E63946",
-  shirtRedShade: "#B12330",
-  shirtRedHigh: "#F25563",
-  shirtWhite: "#FFFFFF",
-  shirtWhiteShade: "#DCDCD8",
-  shirtBlack: "#1A1A1A",
-  pants: "#22232A",
-  pantsShade: "#11121A",
-  pantsHigh: "#33343D",
-  shoe: "#0A0A0A",
-  shoeWhite: "#FFFFFF",
-  outline: "#1A1A1A"
-};
-
 function drawThomas(t) {
   const bodyW = thomasBodyWidth(t.weight);
   const halfW = bodyW / 2;
@@ -1168,950 +1480,101 @@ function drawThomas(t) {
 }
 
 function drawThomasNormal(x, y, halfW, t) {
+  drawThomasBody(x, y, t);
+}
+
+// ---------- Image-based Thomas body ----------
+// Render order (back to front, every frame):
+//   1. back leg  2. back arm  3. torso  4. front leg  5. front arm  6. head
+// Pivots: arms/legs top-center (= shoulder/hip), head fixed above torso.
+const BODY_LEG_H       = 56;
+const BODY_LEG_W       = 28;
+const BODY_TORSO_H     = 92;
+const BODY_TORSO_W_MIN = 88;
+const BODY_TORSO_W_MAX = 140;
+const BODY_ARM_H       = 78;
+const BODY_ARM_W       = 24;
+const BODY_HEAD_H      = 76;
+const BODY_HEAD_W      = 76;
+const BODY_HIP_DX      = 14;
+const BODY_SHOULDER_DX = 26;
+const BODY_HEAD_GAP    = 4;
+const BODY_STRIDE_PERIOD = 0.5; // 500ms full cycle
+const BODY_SWING_MAX_DEG = 20;
+
+function torsoImgForWeight(weight, isShoot) {
+  if (isShoot) return assets.torsoShoot;
+  if (weight <= 96)  return assets.torsoSlim;
+  if (weight <= 113) return assets.torsoMid;
+  return assets.torsoDik;
+}
+
+function drawLimb(img, pivotX, pivotY, w, h, swing) {
+  if (!img) return;
   ctx.save();
-  ctx.translate(x, y);
+  ctx.translate(pivotX, pivotY);
+  ctx.rotate(swing);
+  // Pivot is top-center: image hangs straight down from the rotation point.
+  ctx.drawImage(img, -w / 2, 0, w, h);
+  ctx.restore();
+}
 
-  const legH = 46;
-  const torsoH = 72;
-  const neckH = 14;
-  const headR = lerp(32, 40, clamp((t.weight - 80) / 50, 0, 1));
-  const legTopY = -legH;
-  const torsoTopY = legTopY - torsoH;
-  const headCenterY = torsoTopY - neckH - headR * 0.95;
+function drawThomasBody(x, y, t) {
+  const isShoot = (t.hitTimer > 0) || (game.rapidFireRemaining > 0);
+  const inCutscene = !!game.cutscene;
 
-  // subtle body bob during walk
-  const bob = Math.sin(t.walkPhase * 2) * 0.9;
-  ctx.translate(0, bob);
+  // Stride: ±20°, sinusoidal, 500ms cycle. Halted during cutscenes.
+  const stridePhase = game.time * (2 * Math.PI / BODY_STRIDE_PERIOD);
+  const swingMax = BODY_SWING_MAX_DEG * Math.PI / 180;
+  const swing = inCutscene ? 0 : Math.sin(stridePhase) * swingMax;
 
-  drawThomasLegs(halfW, legTopY, legH, t);
-  drawThomasTorso(halfW, torsoTopY, torsoH, t);
-  drawThomasArms(halfW, torsoTopY, torsoH, t);
-  drawThomasNeck(0, torsoTopY, neckH);
-  drawThomasHead(0, headCenterY, headR, t);
+  // Idle bob (when not actually moving — Thomas moves continuously in this game,
+  // so this only kicks in during cutscenes).
+  const bob = inCutscene ? Math.sin(game.time * 2 * Math.PI) * 3 : 0;
+
+  // Pair swings: L arm + R leg in phase ; R arm + L leg in opposite phase.
+  const swingArmL = swing;
+  const swingArmR = -swing;
+  const swingLegL = -swing;
+  const swingLegR = swing;
+
+  // Torso width scales with weight, same range as the old procedural Thomas
+  // so existing collision math (thomasCollideR) keeps matching the silhouette.
+  const tWeight = clamp((t.weight - 80) / 50, 0, 1);
+  const torsoW = lerp(BODY_TORSO_W_MIN, BODY_TORSO_W_MAX, tWeight);
+
+  // Anchor coords in Thomas-local space (origin at feet center).
+  const hipY      = -BODY_LEG_H;
+  const shoulderY = hipY - BODY_TORSO_H;
+  const headTopY  = shoulderY - BODY_HEAD_GAP - BODY_HEAD_H;
+
+  // Facing: -1 → flip horizontally. 0 / +1 → no flip.
+  const flipX = (t.facing === -1) ? -1 : 1;
+
+  ctx.save();
+  ctx.translate(x, y + bob);
+  ctx.scale(flipX, 1);
+
+  const torsoImg = torsoImgForWeight(t.weight, isShoot);
+  const frontArmImg = isShoot ? assets.armShoot : assets.armR;
+  const backArmImg  = assets.armL;
+
+  // 1. back leg (left)
+  drawLimb(assets.legL, -BODY_HIP_DX, hipY, BODY_LEG_W, BODY_LEG_H, swingLegL);
+  // 2. back arm (left)
+  drawLimb(backArmImg, -BODY_SHOULDER_DX, shoulderY, BODY_ARM_W, BODY_ARM_H, swingArmL);
+  // 3. torso (centered horizontally; top at shoulder line)
+  if (torsoImg) ctx.drawImage(torsoImg, -torsoW / 2, shoulderY, torsoW, BODY_TORSO_H);
+  // 4. front leg (right)
+  drawLimb(assets.legR, BODY_HIP_DX, hipY, BODY_LEG_W, BODY_LEG_H, swingLegR);
+  // 5. front arm — shoot pose freezes the swing; otherwise normal R-arm swing.
+  drawLimb(frontArmImg, BODY_SHOULDER_DX, shoulderY, BODY_ARM_W, BODY_ARM_H, isShoot ? 0 : swingArmR);
+  // 6. head — no rotation, fixed above torso center
+  if (assets.thomasHead) ctx.drawImage(assets.thomasHead, -BODY_HEAD_W / 2, headTopY, BODY_HEAD_W, BODY_HEAD_H);
 
   ctx.restore();
 }
 
-function drawThomasLegs(halfW, legTopY, legH, t) {
-  const swing = Math.sin(t.walkPhase) * 5;
-  const legW = 20;
-  for (const side of [-1, 1]) {
-    ctx.save();
-    ctx.translate(halfW * 0.34 * side, legTopY);
-    ctx.rotate(swing * 0.025 * (-side));
-
-    // pants base
-    ctx.fillStyle = TC.pants;
-    roundedRect(-legW / 2, 0, legW, legH, 7);
-    ctx.fill();
-
-    // pants shading (clipped inside)
-    ctx.save();
-    ctx.beginPath();
-    roundedRect(-legW / 2, 0, legW, legH, 7);
-    ctx.clip();
-    // shadow side
-    ctx.fillStyle = TC.pantsShade;
-    ctx.fillRect(legW / 2 - 6, 0, 6, legH);
-    // outer-edge highlight
-    ctx.fillStyle = TC.pantsHigh;
-    ctx.fillRect(-legW / 2 + 2, 4, 2, legH - 14);
-    // knee crease line
-    ctx.strokeStyle = "rgba(0,0,0,0.30)";
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.moveTo(-legW / 2 + 3, legH * 0.56);
-    ctx.quadraticCurveTo(0, legH * 0.62, legW / 2 - 3, legH * 0.52);
-    ctx.stroke();
-    // pocket hint
-    ctx.beginPath();
-    const pX = side > 0 ? legW / 2 - 2 : -legW / 2 + 2;
-    ctx.moveTo(pX, 6);
-    ctx.lineTo(pX - 5 * side, 16);
-    ctx.stroke();
-    ctx.restore();
-
-    // outline
-    ctx.strokeStyle = TC.outline;
-    ctx.lineWidth = 3;
-    roundedRect(-legW / 2, 0, legW, legH, 7);
-    ctx.stroke();
-
-    drawShoe(0, legH + 4);
-    ctx.restore();
-  }
-}
-
-function drawShoe(cx, cy) {
-  // shoe body
-  ctx.fillStyle = TC.shoe;
-  ctx.strokeStyle = TC.outline;
-  ctx.lineWidth = 3;
-  ctx.beginPath();
-  ctx.moveTo(cx - 13, cy - 1);
-  ctx.quadraticCurveTo(cx - 15, cy + 5, cx - 11, cy + 8);
-  ctx.lineTo(cx + 14, cy + 8);
-  ctx.quadraticCurveTo(cx + 17, cy + 5, cx + 14, cy - 1);
-  ctx.closePath();
-  ctx.fill(); ctx.stroke();
-  // tongue/throat darker top
-  ctx.fillStyle = "#161616";
-  ctx.beginPath();
-  ctx.moveTo(cx - 9, cy - 1);
-  ctx.quadraticCurveTo(cx, cy - 5, cx + 9, cy - 1);
-  ctx.lineTo(cx + 9, cy + 3);
-  ctx.lineTo(cx - 9, cy + 3);
-  ctx.closePath();
-  ctx.fill();
-  // laces
-  ctx.strokeStyle = "#777";
-  ctx.lineWidth = 1.2;
-  for (let i = 0; i < 3; i++) {
-    ctx.beginPath();
-    ctx.moveTo(cx - 5, cy - 1 + i * 1.5);
-    ctx.lineTo(cx + 5, cy - 1 + i * 1.5);
-    ctx.stroke();
-  }
-  // white sole
-  ctx.fillStyle = TC.shoeWhite;
-  ctx.fillRect(cx - 14, cy + 8, 32, 3);
-  ctx.strokeStyle = TC.outline;
-  ctx.lineWidth = 3;
-  ctx.strokeRect(cx - 14, cy + 8, 32, 3);
-  // side accent
-  ctx.fillStyle = TC.shoeWhite;
-  ctx.fillRect(cx + 7, cy + 1, 4, 7);
-  // shine highlight
-  ctx.fillStyle = "rgba(255,255,255,0.12)";
-  ctx.fillRect(cx - 11, cy + 1, 4, 2);
-}
-
-function drawThomasTorso(halfW, torsoY, torsoH, t) {
-  // base full red
-  ctx.fillStyle = TC.shirtRed;
-  roundedRect(-halfW, torsoY, halfW * 2, torsoH, 16);
-  ctx.fill();
-
-  // stripes clipped
-  ctx.save();
-  ctx.beginPath();
-  roundedRect(-halfW, torsoY, halfW * 2, torsoH, 16);
-  ctx.clip();
-  const stripeCount = 5;
-  const stripeW = (halfW * 2) / stripeCount;
-  for (let i = 0; i < stripeCount; i++) {
-    ctx.fillStyle = (i % 2 === 0) ? TC.shirtRed : TC.shirtWhite;
-    ctx.fillRect(-halfW + i * stripeW, torsoY, stripeW, torsoH);
-  }
-  // chest highlight (upper-left soft bulge)
-  ctx.fillStyle = "rgba(255,255,255,0.18)";
-  ctx.beginPath();
-  ctx.ellipse(-halfW * 0.55, torsoY + 14, halfW * 0.38, 18, 0, 0, Math.PI * 2);
-  ctx.fill();
-  // upper rim highlight
-  ctx.fillStyle = "rgba(255,255,255,0.13)";
-  ctx.fillRect(-halfW, torsoY, halfW * 2, 5);
-  // right side shadow (cell shaded)
-  ctx.fillStyle = "rgba(0,0,0,0.22)";
-  ctx.fillRect(halfW - 18, torsoY, 18, torsoH);
-  // lower belly shadow
-  ctx.fillStyle = "rgba(0,0,0,0.17)";
-  ctx.fillRect(-halfW, torsoY + torsoH - 16, halfW * 2, 16);
-
-  // fabric fold lines
-  ctx.strokeStyle = "rgba(0,0,0,0.25)";
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.moveTo(-halfW + 8, torsoY + 24);
-  ctx.quadraticCurveTo(-halfW * 0.5, torsoY + torsoH * 0.65, -halfW * 0.15, torsoY + torsoH - 6);
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.moveTo(halfW - 8, torsoY + 24);
-  ctx.quadraticCurveTo(halfW * 0.5, torsoY + torsoH * 0.65, halfW * 0.15, torsoY + torsoH - 6);
-  ctx.stroke();
-  // belly horizontal fold
-  ctx.beginPath();
-  ctx.moveTo(-halfW + 10, torsoY + torsoH * 0.73);
-  ctx.quadraticCurveTo(0, torsoY + torsoH * 0.80, halfW - 10, torsoY + torsoH * 0.73);
-  ctx.stroke();
-  ctx.restore();
-
-  // outline silhouette
-  ctx.strokeStyle = TC.outline;
-  ctx.lineWidth = 3;
-  roundedRect(-halfW, torsoY, halfW * 2, torsoH, 16);
-  ctx.stroke();
-
-  // V-neck collar
-  ctx.fillStyle = TC.shirtBlack;
-  ctx.beginPath();
-  ctx.moveTo(-18, torsoY - 2);
-  ctx.lineTo(18, torsoY - 2);
-  ctx.lineTo(12, torsoY + 5);
-  ctx.lineTo(0, torsoY + 22);
-  ctx.lineTo(-12, torsoY + 5);
-  ctx.closePath();
-  ctx.fill();
-  // inner skin reveal
-  ctx.fillStyle = TC.skin;
-  ctx.beginPath();
-  ctx.moveTo(-12, torsoY);
-  ctx.lineTo(12, torsoY);
-  ctx.lineTo(0, torsoY + 18);
-  ctx.closePath();
-  ctx.fill();
-  // collar outlines
-  ctx.strokeStyle = TC.outline;
-  ctx.lineWidth = 2.5;
-  ctx.beginPath();
-  ctx.moveTo(-18, torsoY - 2);
-  ctx.lineTo(0, torsoY + 22);
-  ctx.lineTo(18, torsoY - 2);
-  ctx.moveTo(-12, torsoY);
-  ctx.lineTo(0, torsoY + 18);
-  ctx.lineTo(12, torsoY);
-  ctx.stroke();
-
-  // sponsor text
-  if (t.anim !== "shirt-lift") {
-    ctx.fillStyle = TC.outline;
-    ctx.font = "900 11px Arial Black, Impact, sans-serif";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillText("SNACKBAR", 0, torsoY + torsoH * 0.50);
-    ctx.fillText("THOMAS", 0, torsoY + torsoH * 0.50 + 13);
-  }
-
-  // shirt-lift overlay
-  if (t.anim === "shirt-lift") {
-    // belly base
-    const bellyTop = torsoY + torsoH * 0.45;
-    const bellyH = torsoH * 0.55;
-    ctx.fillStyle = TC.skin;
-    ctx.beginPath();
-    ctx.ellipse(0, bellyTop + bellyH * 0.55, halfW * 0.92, bellyH * 0.62, 0, 0, Math.PI * 2);
-    ctx.fill();
-    // belly shadow + highlight
-    ctx.save();
-    ctx.beginPath();
-    ctx.ellipse(0, bellyTop + bellyH * 0.55, halfW * 0.92, bellyH * 0.62, 0, 0, Math.PI * 2);
-    ctx.clip();
-    ctx.fillStyle = TC.skinShade;
-    ctx.beginPath();
-    ctx.ellipse(0, bellyTop + bellyH * 0.85, halfW * 0.85, bellyH * 0.28, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = TC.skinHigh;
-    ctx.beginPath();
-    ctx.ellipse(-halfW * 0.30, bellyTop + bellyH * 0.25, halfW * 0.28, bellyH * 0.20, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
-    // belly button
-    ctx.fillStyle = TC.skinDeep;
-    ctx.beginPath();
-    ctx.arc(0, bellyTop + bellyH * 0.55, 4, 0, Math.PI * 2);
-    ctx.fill();
-    // belly outline
-    ctx.strokeStyle = TC.outline;
-    ctx.lineWidth = 3;
-    ctx.beginPath();
-    ctx.ellipse(0, bellyTop + bellyH * 0.55, halfW * 0.92, bellyH * 0.62, 0, 0, Math.PI * 2);
-    ctx.stroke();
-
-    // bunched shirt on top
-    ctx.fillStyle = TC.shirtRed;
-    roundedRect(-halfW, torsoY, halfW * 2, torsoH * 0.45, 16);
-    ctx.fill();
-    ctx.save();
-    ctx.beginPath();
-    roundedRect(-halfW, torsoY, halfW * 2, torsoH * 0.45, 16);
-    ctx.clip();
-    for (let i = 0; i < stripeCount; i++) {
-      ctx.fillStyle = (i % 2 === 0) ? TC.shirtRed : TC.shirtWhite;
-      ctx.fillRect(-halfW + i * stripeW, torsoY, stripeW, torsoH * 0.45);
-    }
-    ctx.restore();
-    ctx.strokeStyle = TC.outline;
-    ctx.lineWidth = 3;
-    roundedRect(-halfW, torsoY, halfW * 2, torsoH * 0.45, 16);
-    ctx.stroke();
-    // bunched edge shadow
-    ctx.fillStyle = "rgba(0,0,0,0.30)";
-    ctx.fillRect(-halfW, torsoY + torsoH * 0.40, halfW * 2, 5);
-  }
-}
-
-function drawThomasArms(halfW, torsoY, torsoH, t) {
-  const swing = Math.sin(t.walkPhase) * 7;
-  const shoulderY = torsoY + 12;
-  const sleeveH = 32;
-  const armH = 26;
-
-  for (const side of [-1, 1]) {
-    ctx.save();
-    ctx.translate((halfW - 5) * side, shoulderY);
-    ctx.rotate(swing * 0.028 * (-side));
-
-    // SLEEVE
-    const sleeveW = 24;
-    ctx.fillStyle = TC.shirtRed;
-    roundedRect(-sleeveW / 2, 0, sleeveW, sleeveH, 8);
-    ctx.fill();
-    ctx.save();
-    ctx.beginPath();
-    roundedRect(-sleeveW / 2, 0, sleeveW, sleeveH, 8);
-    ctx.clip();
-    // accent white stripe
-    ctx.fillStyle = TC.shirtWhite;
-    ctx.fillRect(-sleeveW / 2 + 7, 0, 6, sleeveH);
-    // bicep shadow
-    ctx.fillStyle = "rgba(0,0,0,0.22)";
-    ctx.fillRect(sleeveW / 2 - 7, 0, 7, sleeveH);
-    // shoulder highlight
-    ctx.fillStyle = "rgba(255,255,255,0.18)";
-    ctx.beginPath();
-    ctx.ellipse(-sleeveW / 2 + 5, 6, 4, 9, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
-    // black cuff
-    ctx.fillStyle = TC.shirtBlack;
-    ctx.fillRect(-sleeveW / 2, sleeveH - 6, sleeveW, 6);
-    // outline
-    ctx.strokeStyle = TC.outline;
-    ctx.lineWidth = 3;
-    roundedRect(-sleeveW / 2, 0, sleeveW, sleeveH, 8);
-    ctx.stroke();
-
-    // FOREARM
-    ctx.fillStyle = TC.skin;
-    roundedRect(-8, sleeveH, 16, armH, 6);
-    ctx.fill();
-    ctx.save();
-    ctx.beginPath();
-    roundedRect(-8, sleeveH, 16, armH, 6);
-    ctx.clip();
-    ctx.fillStyle = TC.skinShade;
-    ctx.fillRect(3, sleeveH + 2, 5, armH - 4);
-    ctx.fillStyle = TC.skinHigh;
-    ctx.fillRect(-7, sleeveH + 2, 2, armH - 4);
-    // muscle curve line
-    ctx.strokeStyle = TC.skinShade;
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.moveTo(-3, sleeveH + 6);
-    ctx.quadraticCurveTo(0, sleeveH + armH * 0.5, 2, sleeveH + armH - 7);
-    ctx.stroke();
-    // arm hairs hint
-    ctx.strokeStyle = "rgba(50,30,15,0.45)";
-    ctx.lineWidth = 1;
-    for (let i = 0; i < 5; i++) {
-      ctx.beginPath();
-      ctx.moveTo(-6 + i * 3, sleeveH + 6 + i * 3);
-      ctx.lineTo(-6 + i * 3 + 1, sleeveH + 9 + i * 3);
-      ctx.stroke();
-    }
-    ctx.restore();
-    ctx.strokeStyle = TC.outline;
-    ctx.lineWidth = 3;
-    roundedRect(-8, sleeveH, 16, armH, 6);
-    ctx.stroke();
-
-    // HAND
-    const handY = sleeveH + armH + 8;
-    ctx.fillStyle = TC.skin;
-    ctx.beginPath();
-    ctx.arc(0, handY, 9, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.save();
-    ctx.beginPath();
-    ctx.arc(0, handY, 9, 0, Math.PI * 2);
-    ctx.clip();
-    ctx.fillStyle = TC.skinShade;
-    ctx.beginPath();
-    ctx.arc(3, handY + 2, 7, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = TC.skinHigh;
-    ctx.beginPath();
-    ctx.arc(-3, handY - 2, 3, 0, Math.PI * 2);
-    ctx.fill();
-    // knuckle lines
-    ctx.strokeStyle = TC.skinShade;
-    ctx.lineWidth = 1;
-    for (let i = 0; i < 3; i++) {
-      ctx.beginPath();
-      ctx.moveTo(-4 + i * 3, handY + 4);
-      ctx.lineTo(-4 + i * 3, handY + 7);
-      ctx.stroke();
-    }
-    ctx.restore();
-    ctx.strokeStyle = TC.outline;
-    ctx.lineWidth = 3;
-    ctx.beginPath();
-    ctx.arc(0, handY, 9, 0, Math.PI * 2);
-    ctx.stroke();
-
-    ctx.restore();
-  }
-}
-
-function drawThomasNeck(cx, torsoTopY, neckH) {
-  ctx.fillStyle = TC.skin;
-  ctx.strokeStyle = TC.outline;
-  ctx.lineWidth = 3;
-  ctx.beginPath();
-  ctx.rect(cx - 13, torsoTopY - neckH, 26, neckH + 2);
-  ctx.fill(); ctx.stroke();
-  ctx.save();
-  ctx.beginPath();
-  ctx.rect(cx - 13, torsoTopY - neckH, 26, neckH + 2);
-  ctx.clip();
-  // shadow under jaw
-  ctx.fillStyle = TC.skinShade;
-  ctx.fillRect(cx - 13, torsoTopY - 6, 26, 8);
-  // left highlight
-  ctx.fillStyle = TC.skinHigh;
-  ctx.fillRect(cx - 11, torsoTopY - neckH, 3, neckH);
-  // collarbone line
-  ctx.strokeStyle = "rgba(0,0,0,0.28)";
-  ctx.lineWidth = 1.5;
-  ctx.beginPath();
-  ctx.moveTo(cx - 11, torsoTopY - 1);
-  ctx.quadraticCurveTo(cx, torsoTopY + 2, cx + 11, torsoTopY - 1);
-  ctx.stroke();
-  // adam's apple
-  ctx.fillStyle = TC.skinShade;
-  ctx.beginPath();
-  ctx.arc(cx + 1, torsoTopY - neckH * 0.5, 1.6, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.restore();
-}
-
-function drawThomasHead(cx, cy, r, t) {
-  if (thomasHeadReady) {
-    // Image-based head: scale to match the procedural bounding box
-    // (chin near cy + r*1.15, top of hair near cy - r*1.55).
-    const imgH = r * 2.7;
-    const imgW = imgH; // source is 256x256
-    const bottomY = cy + r * 1.15;
-    const topY = bottomY - imgH;
-    const leftX = cx - imgW / 2;
-    ctx.drawImage(thomasHeadImg, leftX, topY, imgW, imgH);
-    return;
-  }
-
-  // Ears (back layer)
-  ctx.fillStyle = TC.skin;
-  ctx.strokeStyle = TC.outline;
-  ctx.lineWidth = 3;
-  for (const s of [-1, 1]) {
-    ctx.beginPath();
-    ctx.ellipse(cx + r * 0.93 * s, cy + r * 0.05, r * 0.17, r * 0.27, 0, 0, Math.PI * 2);
-    ctx.fill(); ctx.stroke();
-    ctx.fillStyle = TC.skinShade;
-    ctx.beginPath();
-    ctx.ellipse(cx + r * 0.93 * s, cy + r * 0.10, r * 0.08, r * 0.16, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = TC.skin;
-  }
-
-  // Face shape
-  const fW = r * 0.96;
-  const fH = r * 1.10;
-  ctx.fillStyle = TC.skin;
-  ctx.beginPath();
-  ctx.ellipse(cx, cy, fW, fH, 0, 0, Math.PI * 2);
-  ctx.fill();
-
-  // Face shading
-  ctx.save();
-  ctx.beginPath();
-  ctx.ellipse(cx, cy, fW, fH, 0, 0, Math.PI * 2);
-  ctx.clip();
-  // shadow right
-  ctx.fillStyle = TC.skinShade;
-  ctx.beginPath();
-  ctx.ellipse(cx + r * 0.50, cy + r * 0.10, r * 0.55, r * 1.05, 0, 0, Math.PI * 2);
-  ctx.fill();
-  // cheek highlight left
-  ctx.fillStyle = TC.skinHigh;
-  ctx.beginPath();
-  ctx.ellipse(cx - r * 0.42, cy + r * 0.10, r * 0.22, r * 0.32, 0, 0, Math.PI * 2);
-  ctx.fill();
-  // forehead highlight
-  ctx.beginPath();
-  ctx.ellipse(cx - r * 0.08, cy - r * 0.36, r * 0.30, r * 0.20, 0, 0, Math.PI * 2);
-  ctx.fill();
-  // rosy cheeks
-  ctx.fillStyle = "rgba(220,110,95,0.32)";
-  ctx.beginPath();
-  ctx.ellipse(cx - r * 0.42, cy + r * 0.18, r * 0.17, r * 0.11, 0, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.beginPath();
-  ctx.ellipse(cx + r * 0.42, cy + r * 0.20, r * 0.15, r * 0.10, 0, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.restore();
-
-  // face outline
-  ctx.strokeStyle = TC.outline;
-  ctx.lineWidth = 3;
-  ctx.beginPath();
-  ctx.ellipse(cx, cy, fW, fH, 0, 0, Math.PI * 2);
-  ctx.stroke();
-
-  drawDetailedBeard(cx, cy, r);
-  drawDetailedHair(cx, cy, r);
-  drawDetailedFace(cx, cy, r, t);
-  drawMustache(cx, cy, r);
-}
-
-function drawDetailedHair(cx, cy, r) {
-  ctx.fillStyle = TC.hair;
-  ctx.strokeStyle = TC.outline;
-  ctx.lineWidth = 3;
-
-  const browY = cy - r * 0.30;
-  const bumps = 9;
-
-  function tracePath() {
-    ctx.beginPath();
-    ctx.moveTo(cx - r * 0.93, browY + r * 0.05);
-    ctx.lineTo(cx - r * 0.95, browY - r * 0.40);
-    for (let i = 0; i <= bumps; i++) {
-      const t = i / bumps;
-      const px = cx + lerp(-r * 0.95, r * 0.95, t);
-      const topY = cy - r * 1.18 + Math.sin(t * Math.PI) * -r * 0.04;
-      ctx.bezierCurveTo(
-        px - r * 0.10, topY + r * 0.08,
-        px - r * 0.04, topY - r * 0.05,
-        px + r * 0.04, topY + r * 0.02
-      );
-    }
-    ctx.lineTo(cx + r * 0.95, browY - r * 0.40);
-    ctx.lineTo(cx + r * 0.93, browY + r * 0.05);
-    // forehead hairline (subtle widow's peak feel)
-    ctx.bezierCurveTo(
-      cx + r * 0.55, browY + r * 0.14,
-      cx + r * 0.22, browY - r * 0.04,
-      cx + r * 0.05, browY + r * 0.07
-    );
-    ctx.quadraticCurveTo(cx, browY + r * 0.14, cx - r * 0.05, browY + r * 0.07);
-    ctx.bezierCurveTo(
-      cx - r * 0.22, browY - r * 0.04,
-      cx - r * 0.55, browY + r * 0.14,
-      cx - r * 0.93, browY + r * 0.05
-    );
-    ctx.closePath();
-  }
-
-  tracePath();
-  ctx.fill(); ctx.stroke();
-
-  // shading
-  ctx.save();
-  tracePath();
-  ctx.clip();
-  // right side shadow
-  ctx.fillStyle = TC.hairShade;
-  ctx.fillRect(cx + r * 0.10, cy - r * 1.30, r * 1.0, r * 1.40);
-  // bottom hairline rim shadow
-  ctx.fillStyle = "rgba(0,0,0,0.35)";
-  ctx.fillRect(cx - r, browY - 4, r * 2, 6);
-
-  // curl strokes (texture)
-  ctx.strokeStyle = TC.hairShade;
-  ctx.lineWidth = 2;
-  ctx.lineCap = "round";
-  const curls = [
-    [-r * 0.55, -r * 0.90, -r * 0.40, -r * 0.55],
-    [-r * 0.32, -r * 1.05, -r * 0.12, -r * 0.65],
-    [-r * 0.02, -r * 1.10, r * 0.18, -r * 0.65],
-    [r * 0.22, -r * 0.98, r * 0.42, -r * 0.60],
-    [r * 0.45, -r * 0.85, r * 0.60, -r * 0.50],
-    [-r * 0.75, -r * 0.55, -r * 0.60, -r * 0.25],
-    [r * 0.65, -r * 0.55, r * 0.80, -r * 0.30]
-  ];
-  for (const c of curls) {
-    ctx.beginPath();
-    ctx.moveTo(cx + c[0], cy + c[1]);
-    ctx.quadraticCurveTo(cx + (c[0] + c[2]) / 2 + 2, cy + (c[1] + c[3]) / 2 - 4, cx + c[2], cy + c[3]);
-    ctx.stroke();
-  }
-  // highlight strokes
-  ctx.strokeStyle = TC.hairHigh;
-  ctx.lineWidth = 1.5;
-  const hi = [
-    [-r * 0.35, -r * 0.90, -r * 0.20, -r * 0.65],
-    [-r * 0.05, -r * 0.98, r * 0.10, -r * 0.70],
-    [r * 0.28, -r * 0.88, r * 0.38, -r * 0.65]
-  ];
-  for (const c of hi) {
-    ctx.beginPath();
-    ctx.moveTo(cx + c[0], cy + c[1]);
-    ctx.quadraticCurveTo(cx + (c[0] + c[2]) / 2, cy + (c[1] + c[3]) / 2 - 2, cx + c[2], cy + c[3]);
-    ctx.stroke();
-  }
-  ctx.lineCap = "butt";
-  ctx.restore();
-}
-
-function drawDetailedBeard(cx, cy, r) {
-  ctx.fillStyle = TC.beard;
-  ctx.strokeStyle = TC.outline;
-  ctx.lineWidth = 3;
-
-  function traceBeard() {
-    ctx.beginPath();
-    ctx.moveTo(cx - r * 0.92, cy - r * 0.20);
-    ctx.lineTo(cx - r * 0.92, cy + r * 0.10);
-    ctx.bezierCurveTo(cx - r * 0.98, cy + r * 0.45, cx - r * 0.82, cy + r * 0.78, cx - r * 0.55, cy + r * 0.97);
-    ctx.bezierCurveTo(cx - r * 0.25, cy + r * 1.12, cx + r * 0.25, cy + r * 1.12, cx + r * 0.55, cy + r * 0.97);
-    ctx.bezierCurveTo(cx + r * 0.82, cy + r * 0.78, cx + r * 0.98, cy + r * 0.45, cx + r * 0.92, cy + r * 0.10);
-    ctx.lineTo(cx + r * 0.92, cy - r * 0.20);
-    // inner cut to make mouth gap
-    ctx.lineTo(cx + r * 0.75, cy + r * 0.05);
-    ctx.lineTo(cx + r * 0.50, cy + r * 0.14);
-    ctx.lineTo(cx + r * 0.38, cy + r * 0.20);
-    ctx.lineTo(cx + r * 0.30, cy + r * 0.31);
-    ctx.lineTo(cx - r * 0.30, cy + r * 0.31);
-    ctx.lineTo(cx - r * 0.38, cy + r * 0.20);
-    ctx.lineTo(cx - r * 0.50, cy + r * 0.14);
-    ctx.lineTo(cx - r * 0.75, cy + r * 0.05);
-    ctx.closePath();
-  }
-  traceBeard();
-  ctx.fill(); ctx.stroke();
-
-  // shading
-  ctx.save();
-  traceBeard();
-  ctx.clip();
-  // shadow under chin
-  ctx.fillStyle = TC.beardEdge;
-  ctx.beginPath();
-  ctx.ellipse(cx, cy + r * 1.02, r * 0.55, r * 0.14, 0, 0, Math.PI * 2);
-  ctx.fill();
-  // right-side darker
-  ctx.fillStyle = "rgba(0,0,0,0.32)";
-  ctx.fillRect(cx + r * 0.30, cy, r * 0.70, r * 1.20);
-
-  // strand texture
-  ctx.strokeStyle = TC.beardHigh;
-  ctx.lineWidth = 1.3;
-  const strands = [
-    [-r * 0.55, r * 0.45, -r * 0.45, r * 0.70],
-    [-r * 0.36, r * 0.55, -r * 0.28, r * 0.86],
-    [-r * 0.14, r * 0.55, -r * 0.07, r * 0.92],
-    [r * 0.10, r * 0.55, r * 0.05, r * 0.94],
-    [r * 0.28, r * 0.55, r * 0.22, r * 0.88],
-    [r * 0.46, r * 0.50, r * 0.40, r * 0.75],
-    [-r * 0.72, r * 0.30, -r * 0.68, r * 0.55],
-    [r * 0.72, r * 0.30, r * 0.68, r * 0.55],
-    [-r * 0.22, r * 0.95, -r * 0.18, r * 1.10],
-    [r * 0.22, r * 0.95, r * 0.18, r * 1.10],
-    [0, r * 0.96, 0, r * 1.12]
-  ];
-  for (const s of strands) {
-    ctx.beginPath();
-    ctx.moveTo(cx + s[0], cy + s[1]);
-    ctx.lineTo(cx + s[2], cy + s[3]);
-    ctx.stroke();
-  }
-  ctx.restore();
-
-  // outer fuzz along silhouette
-  ctx.strokeStyle = TC.beard;
-  ctx.lineWidth = 1.5;
-  const fuzz = [
-    [-r * 0.95, r * 0.20, -r * 1.04, r * 0.22],
-    [-r * 0.92, r * 0.42, -r * 1.04, r * 0.46],
-    [-r * 0.78, r * 0.70, -r * 0.87, r * 0.79],
-    [-r * 0.55, r * 0.98, -r * 0.62, r * 1.08],
-    [-r * 0.25, r * 1.12, -r * 0.25, r * 1.20],
-    [r * 0.0, r * 1.13, 0, r * 1.21],
-    [r * 0.25, r * 1.12, r * 0.25, r * 1.20],
-    [r * 0.55, r * 0.98, r * 0.62, r * 1.08],
-    [r * 0.78, r * 0.70, r * 0.87, r * 0.79],
-    [r * 0.92, r * 0.42, r * 1.04, r * 0.46],
-    [r * 0.95, r * 0.20, r * 1.04, r * 0.22]
-  ];
-  for (const f of fuzz) {
-    ctx.beginPath();
-    ctx.moveTo(cx + f[0], cy + f[1]);
-    ctx.lineTo(cx + f[2], cy + f[3]);
-    ctx.stroke();
-  }
-}
-
-function drawDetailedFace(cx, cy, r, t) {
-  // eyebrows
-  ctx.fillStyle = TC.beard;
-  ctx.strokeStyle = TC.outline;
-  ctx.lineWidth = 2;
-  for (const s of [-1, 1]) {
-    ctx.beginPath();
-    ctx.moveTo(cx + r * 0.58 * s, cy - r * 0.32);
-    ctx.bezierCurveTo(
-      cx + r * 0.45 * s, cy - r * 0.45,
-      cx + r * 0.25 * s, cy - r * 0.42,
-      cx + r * 0.13 * s, cy - r * 0.35
-    );
-    ctx.lineTo(cx + r * 0.13 * s, cy - r * 0.27);
-    ctx.bezierCurveTo(
-      cx + r * 0.30 * s, cy - r * 0.34,
-      cx + r * 0.45 * s, cy - r * 0.36,
-      cx + r * 0.58 * s, cy - r * 0.25
-    );
-    ctx.closePath();
-    ctx.fill(); ctx.stroke();
-  }
-  // eyebrow hair strokes
-  ctx.strokeStyle = TC.hairShade;
-  ctx.lineWidth = 1;
-  for (let i = 0; i < 6; i++) {
-    const lx = -r * 0.55 + i * r * 0.07;
-    ctx.beginPath();
-    ctx.moveTo(cx + lx, cy - r * 0.32);
-    ctx.lineTo(cx + lx + 1, cy - r * 0.37);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.moveTo(cx - lx, cy - r * 0.32);
-    ctx.lineTo(cx - lx - 1, cy - r * 0.37);
-    ctx.stroke();
-  }
-
-  // eye socket shadow
-  ctx.fillStyle = "rgba(0,0,0,0.12)";
-  for (const s of [-1, 1]) {
-    ctx.beginPath();
-    ctx.ellipse(cx + r * 0.34 * s, cy - r * 0.17, r * 0.20, r * 0.13, 0, 0, Math.PI * 2);
-    ctx.fill();
-  }
-
-  // eyes
-  for (const s of [-1, 1]) {
-    // white
-    ctx.fillStyle = "#FFFFFF";
-    ctx.strokeStyle = TC.outline;
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.ellipse(cx + r * 0.34 * s, cy - r * 0.15, r * 0.18, r * 0.12, 0, 0, Math.PI * 2);
-    ctx.fill(); ctx.stroke();
-    // iris outer
-    ctx.fillStyle = "#5A3A20";
-    ctx.beginPath();
-    ctx.arc(cx + r * 0.34 * s + (s > 0 ? r * 0.02 : -r * 0.02), cy - r * 0.15, r * 0.10, 0, Math.PI * 2);
-    ctx.fill();
-    // iris inner ring
-    ctx.fillStyle = "#3F2715";
-    ctx.beginPath();
-    ctx.arc(cx + r * 0.34 * s + (s > 0 ? r * 0.02 : -r * 0.02), cy - r * 0.15, r * 0.07, 0, Math.PI * 2);
-    ctx.fill();
-    // pupil
-    ctx.fillStyle = TC.outline;
-    ctx.beginPath();
-    ctx.arc(cx + r * 0.34 * s + (s > 0 ? r * 0.02 : -r * 0.02), cy - r * 0.15, r * 0.045, 0, Math.PI * 2);
-    ctx.fill();
-    // catchlight
-    ctx.fillStyle = "#FFFFFF";
-    ctx.beginPath();
-    ctx.arc(cx + r * 0.34 * s + (s > 0 ? r * 0.05 : 0.01), cy - r * 0.18, r * 0.03, 0, Math.PI * 2);
-    ctx.fill();
-    // eyelid line thicker
-    ctx.strokeStyle = TC.outline;
-    ctx.lineWidth = 2.8;
-    ctx.beginPath();
-    ctx.ellipse(cx + r * 0.34 * s, cy - r * 0.15, r * 0.18, r * 0.12, 0, Math.PI * 1.05, Math.PI * 2);
-    ctx.stroke();
-  }
-  ctx.lineWidth = 2;
-
-  // nose
-  // bridge subtle line
-  ctx.strokeStyle = TC.skinShade;
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.moveTo(cx + 2, cy - r * 0.06);
-  ctx.quadraticCurveTo(cx + 5, cy + r * 0.06, cx + 3, cy + r * 0.14);
-  ctx.stroke();
-  // bulb
-  ctx.fillStyle = TC.skinShade;
-  ctx.beginPath();
-  ctx.ellipse(cx + 1, cy + r * 0.14, r * 0.10, r * 0.06, 0, 0, Math.PI * 2);
-  ctx.fill();
-  // nostrils
-  ctx.fillStyle = TC.skinDeep;
-  ctx.beginPath();
-  ctx.ellipse(cx - r * 0.06, cy + r * 0.16, 1.4, 1, 0, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.beginPath();
-  ctx.ellipse(cx + r * 0.08, cy + r * 0.16, 1.4, 1, 0, 0, Math.PI * 2);
-  ctx.fill();
-  // nose left highlight
-  ctx.fillStyle = TC.skinHigh;
-  ctx.beginPath();
-  ctx.ellipse(cx - r * 0.03, cy - r * 0.01, r * 0.025, r * 0.07, 0, 0, Math.PI * 2);
-  ctx.fill();
-
-  // mouth
-  if (t.anim === "munch") {
-    ctx.fillStyle = "#3D1A10";
-    ctx.beginPath();
-    ctx.ellipse(cx, cy + r * 0.46, r * 0.22, r * 0.15, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = TC.outline;
-    ctx.lineWidth = 2.5;
-    ctx.stroke();
-    ctx.fillStyle = "#C84A4A";
-    ctx.beginPath();
-    ctx.ellipse(cx, cy + r * 0.51, r * 0.12, r * 0.07, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = "#FFFFFF";
-    ctx.fillRect(cx - r * 0.18, cy + r * 0.36, r * 0.36, r * 0.05);
-  } else if (t.anim === "shirt-lift") {
-    ctx.fillStyle = "#3D1A10";
-    ctx.beginPath();
-    ctx.ellipse(cx, cy + r * 0.43, r * 0.13, r * 0.10, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = TC.outline;
-    ctx.lineWidth = 2.5;
-    ctx.stroke();
-  } else {
-    // warm wide smile
-    // dark interior
-    ctx.fillStyle = "#3D1A10";
-    ctx.beginPath();
-    ctx.moveTo(cx - r * 0.30, cy + r * 0.33);
-    ctx.bezierCurveTo(
-      cx - r * 0.15, cy + r * 0.60,
-      cx + r * 0.15, cy + r * 0.60,
-      cx + r * 0.30, cy + r * 0.33
-    );
-    ctx.bezierCurveTo(
-      cx + r * 0.15, cy + r * 0.42,
-      cx - r * 0.15, cy + r * 0.42,
-      cx - r * 0.30, cy + r * 0.33
-    );
-    ctx.closePath();
-    ctx.fill();
-    // teeth
-    ctx.fillStyle = "#FFFFFF";
-    ctx.beginPath();
-    ctx.moveTo(cx - r * 0.26, cy + r * 0.35);
-    ctx.bezierCurveTo(
-      cx - r * 0.13, cy + r * 0.53,
-      cx + r * 0.13, cy + r * 0.53,
-      cx + r * 0.26, cy + r * 0.35
-    );
-    ctx.bezierCurveTo(
-      cx + r * 0.13, cy + r * 0.43,
-      cx - r * 0.13, cy + r * 0.43,
-      cx - r * 0.26, cy + r * 0.35
-    );
-    ctx.closePath();
-    ctx.fill();
-    // tooth separators
-    ctx.strokeStyle = "rgba(0,0,0,0.30)";
-    ctx.lineWidth = 1;
-    for (let i = -2; i <= 2; i++) {
-      if (i === 0) continue;
-      const px = cx + i * r * 0.08;
-      ctx.beginPath();
-      ctx.moveTo(px, cy + r * 0.36);
-      ctx.lineTo(px, cy + r * 0.46);
-      ctx.stroke();
-    }
-    // gum shadow under teeth
-    ctx.fillStyle = "rgba(0,0,0,0.22)";
-    ctx.beginPath();
-    ctx.moveTo(cx - r * 0.24, cy + r * 0.44);
-    ctx.bezierCurveTo(
-      cx - r * 0.12, cy + r * 0.51,
-      cx + r * 0.12, cy + r * 0.51,
-      cx + r * 0.24, cy + r * 0.44
-    );
-    ctx.lineTo(cx + r * 0.24, cy + r * 0.46);
-    ctx.bezierCurveTo(
-      cx + r * 0.12, cy + r * 0.53,
-      cx - r * 0.12, cy + r * 0.53,
-      cx - r * 0.24, cy + r * 0.46
-    );
-    ctx.closePath();
-    ctx.fill();
-    // smile outline
-    ctx.strokeStyle = TC.outline;
-    ctx.lineWidth = 2.5;
-    ctx.beginPath();
-    ctx.moveTo(cx - r * 0.30, cy + r * 0.33);
-    ctx.bezierCurveTo(
-      cx - r * 0.15, cy + r * 0.60,
-      cx + r * 0.15, cy + r * 0.60,
-      cx + r * 0.30, cy + r * 0.33
-    );
-    ctx.stroke();
-    // upper lip line
-    ctx.strokeStyle = "rgba(80,40,30,0.6)";
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.moveTo(cx - r * 0.30, cy + r * 0.33);
-    ctx.bezierCurveTo(
-      cx - r * 0.10, cy + r * 0.30,
-      cx + r * 0.10, cy + r * 0.30,
-      cx + r * 0.30, cy + r * 0.33
-    );
-    ctx.stroke();
-    // dimple hints
-    ctx.strokeStyle = "rgba(0,0,0,0.20)";
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.arc(cx - r * 0.34, cy + r * 0.30, 3, 0, Math.PI * 0.7);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.arc(cx + r * 0.34, cy + r * 0.30, 3, Math.PI * 0.3, Math.PI);
-    ctx.stroke();
-  }
-}
-
-function drawMustache(cx, cy, r) {
-  ctx.fillStyle = TC.beard;
-  ctx.strokeStyle = TC.outline;
-  ctx.lineWidth = 2;
-  // left mustache
-  ctx.beginPath();
-  ctx.moveTo(cx - r * 0.34, cy + r * 0.18);
-  ctx.bezierCurveTo(
-    cx - r * 0.24, cy + r * 0.14,
-    cx - r * 0.10, cy + r * 0.20,
-    cx - r * 0.04, cy + r * 0.28
-  );
-  ctx.lineTo(cx - r * 0.04, cy + r * 0.33);
-  ctx.lineTo(cx - r * 0.34, cy + r * 0.33);
-  ctx.closePath();
-  ctx.fill(); ctx.stroke();
-  // right mustache
-  ctx.beginPath();
-  ctx.moveTo(cx + r * 0.34, cy + r * 0.18);
-  ctx.bezierCurveTo(
-    cx + r * 0.24, cy + r * 0.14,
-    cx + r * 0.10, cy + r * 0.20,
-    cx + r * 0.04, cy + r * 0.28
-  );
-  ctx.lineTo(cx + r * 0.04, cy + r * 0.33);
-  ctx.lineTo(cx + r * 0.34, cy + r * 0.33);
-  ctx.closePath();
-  ctx.fill(); ctx.stroke();
-  // mustache hair strokes
-  ctx.strokeStyle = TC.beardHigh;
-  ctx.lineWidth = 1;
-  for (let i = 0; i < 4; i++) {
-    ctx.beginPath();
-    ctx.moveTo(cx - r * 0.30 + i * r * 0.06, cy + r * 0.22);
-    ctx.lineTo(cx - r * 0.28 + i * r * 0.06, cy + r * 0.30);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.moveTo(cx + r * 0.30 - i * r * 0.06, cy + r * 0.22);
-    ctx.lineTo(cx + r * 0.28 - i * r * 0.06, cy + r * 0.30);
-    ctx.stroke();
-  }
-}
 
 function drawThomasDrinking(x, y, halfW, t) {
   drawThomasNormal(x, y, halfW, { ...t, anim: "walk" });
