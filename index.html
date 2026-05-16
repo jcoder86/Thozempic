@@ -477,11 +477,13 @@ function spawnFood() {
   else kind = "hamburger";
   const kg = kind === "kapsalon" ? 3 : kind === "pizza" ? 2 : 1;
 
-  // pick a position on the road, but not too close to Thomas
+  // pick a position on the road, but not too close to Thomas.
+  // Bias y toward the top of the road (background) so foreground isn't flooded.
   let x, y;
   for (let tries = 0; tries < 12; tries++) {
     x = randRange(ROAD_LEFT + 20, ROAD_RIGHT - 20);
-    y = randRange(ROAD_TOP + 20, ROAD_BOTTOM - 30);
+    const r = Math.pow(Math.random(), 2.2);   // skewed toward 0 (= near ROAD_TOP)
+    y = ROAD_TOP + 20 + r * (ROAD_BOTTOM - 30 - (ROAD_TOP + 20));
     const dx = x - game.thomas.x, dy = y - game.thomas.y;
     if (dx * dx + dy * dy > 70 * 70) break;
   }
@@ -1460,23 +1462,41 @@ function drawCafe(c) {
 }
 
 // ---------- Thomas rendering ----------
+// Depth scaling: Thomas shrinks as he walks toward the top of the road
+// (further from the camera). Visual only — collision math is unchanged.
+const THOMAS_DEPTH_SCALE_NEAR = 1.0;  // at ROAD_BOTTOM
+const THOMAS_DEPTH_SCALE_FAR  = 0.55; // at ROAD_TOP
+
+function thomasDepthScale(y) {
+  const t = clamp((y - ROAD_TOP) / (ROAD_BOTTOM - ROAD_TOP), 0, 1);
+  return lerp(THOMAS_DEPTH_SCALE_FAR, THOMAS_DEPTH_SCALE_NEAR, t);
+}
+
 function drawThomas(t) {
   const bodyW = thomasBodyWidth(t.weight);
   const halfW = bodyW / 2;
   const x = t.x;
   const y = t.y;
+  const ds = thomasDepthScale(y);
 
-  // ground shadow
+  ctx.save();
+  // Scale around the feet so Thomas stays planted on the ground as he shrinks.
+  ctx.translate(x, y);
+  ctx.scale(ds, ds);
+  ctx.translate(-x, -y);
+
+  // ground shadow (also scaled, so it shrinks with Thomas)
   ctx.fillStyle = C.shadow;
   ctx.beginPath();
   ctx.ellipse(x, y - 2, halfW * 0.95, THOMAS_FEET_RY, 0, 0, Math.PI * 2);
   ctx.fill();
 
-  if (game.state === STATE.GAME_OVER) { drawThomasExplodingPose(x, y, halfW); return; }
-  if (game.state === STATE.LEVEL_CLEAR) { drawThomasVictoryPose(x, y, halfW, t); return; }
-  if (t.anim === "drinking-beer") { drawThomasDrinking(x, y, halfW, t); return; }
+  if (game.state === STATE.GAME_OVER) { drawThomasExplodingPose(x, y, halfW); ctx.restore(); return; }
+  if (game.state === STATE.LEVEL_CLEAR) { drawThomasVictoryPose(x, y, halfW, t); ctx.restore(); return; }
+  if (t.anim === "drinking-beer") { drawThomasDrinking(x, y, halfW, t); ctx.restore(); return; }
 
   drawThomasNormal(x, y, halfW, t);
+  ctx.restore();
 }
 
 function drawThomasNormal(x, y, halfW, t) {
