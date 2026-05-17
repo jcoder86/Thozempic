@@ -2,5 +2,10 @@ services:
   thozempic:
     build: .
     ports:
-      - "3002:80"
+      - "3002:3000"
+    volumes:
+      - thozempic-data:/data
     restart: unless-stopped
+
+volumes:
+  thozempic-data:

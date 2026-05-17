@@ -225,6 +225,14 @@ const RAPID_FIRE_DURATION = 4;         // seconds of rapid fire after pickup
 const RAPID_FIRE_COOLDOWN_MS = 80;     // machine-gun pace cooldown
 const POWERUP_GOLD = "#FFD700";
 
+// Blue 2mg power-up: SHOOT it to enable double damage on Ozempic hits.
+// Independent timer from the gold one; same lifetime and shoot-only rule.
+const POWERUP_BLUE_INTERVAL  = 14;
+const POWERUP_BLUE_LIFETIME  = 10;
+const DOUBLE_DAMAGE_DURATION = 7;
+const DOUBLE_DAMAGE_MULT     = 2;
+const POWERUP_BLUE_COLOR     = "#4488FF";
+
 // Cafe tuning
 const CAFE_BASE_INTERVAL_MIN = 12;
 const CAFE_BASE_INTERVAL_MAX = 25;
@@ -438,6 +446,9 @@ function newGame(level = 1) {
     powerups: [],
     powerupSpawnTimer: POWERUP_INTERVAL,
     rapidFireRemaining: 0,
+    powerupsBlue: [],
+    powerupBlueSpawnTimer: POWERUP_BLUE_INTERVAL,
+    doubleDamageRemaining: 0,
     projectiles: [],
     bgFadeT: 1,                 // 0 = previous level still fully visible, 1 = current
     bgPrevImg: null,            // assigned on level-up so we can crossfade
@@ -553,6 +564,42 @@ function updatePowerups(dt) {
 function activateRapidFire(x, y) {
   game.rapidFireRemaining = RAPID_FIRE_DURATION;
   game.pendulum.cooldownMs = 0;
+  spawnMunchParticles(x, y - 20);
+}
+
+// ---------- Blue 2mg power-up (double damage) ----------
+function spawnPowerupBlue() {
+  const x = randRange(ROAD_LEFT + 20, ROAD_RIGHT - 20);
+  const y = randRange(ROAD_TOP + 20, ROAD_BOTTOM - 30);
+  game.powerupsBlue.push({
+    x, y,
+    r: POWERUP_RADIUS,
+    spawnT: 0,
+    bobPhase: Math.random() * Math.PI * 2
+  });
+}
+
+function updatePowerupsBlue(dt) {
+  game.powerupBlueSpawnTimer -= dt;
+  if (game.powerupBlueSpawnTimer <= 0) {
+    spawnPowerupBlue();
+    game.powerupBlueSpawnTimer = POWERUP_BLUE_INTERVAL;
+  }
+  for (let i = game.powerupsBlue.length - 1; i >= 0; i--) {
+    const p = game.powerupsBlue[i];
+    p.bobPhase += dt * 3;
+    p.spawnT += dt;
+    if (p.spawnT >= POWERUP_BLUE_LIFETIME) {
+      game.powerupsBlue.splice(i, 1);
+    }
+  }
+  if (game.doubleDamageRemaining > 0) {
+    game.doubleDamageRemaining = Math.max(0, game.doubleDamageRemaining - dt);
+  }
+}
+
+function activateDoubleDamage(x, y) {
+  game.doubleDamageRemaining = DOUBLE_DAMAGE_DURATION;
   spawnMunchParticles(x, y - 20);
 }
 
@@ -704,6 +751,7 @@ function updatePlaying(dt) {
   updateProjectiles(dt);
   updateFoodsBob(dt);
   updatePowerups(dt);
+  updatePowerupsBlue(dt);
   checkFoodEats();
 
   // Food spawn
@@ -771,13 +819,16 @@ function updateProjectiles(dt) {
     p.x += p.vx * dt;
     p.y += p.vy * dt;
 
-    // cafe collision
-    if (game.cafe && (game.cafe.state === "idle" || game.cafe.state === "sliding_in")) {
+    // kroeg collision — shoot the falling kroeg before it lands.
+    // (Old check used stale states "idle"/"sliding_in" from the pre-refactor
+    // cafe; after the refactor the only relevant state is "falling".)
+    if (game.cafe && game.cafe.state === "falling") {
       const c = game.cafe;
       if (p.x > c.x - CAFE_W / 2 && p.x < c.x + CAFE_W / 2 && p.y > c.y && p.y < c.y + CAFE_H) {
         c.state = "dying";
         c.puffT = 0;
         spawnPuffParticles(c.x, c.y + CAFE_H / 2);
+        spawnHitParticles(c.x, c.y + CAFE_H / 2);  // brief white flash
         game.projectiles.splice(i, 1);
         continue;
       }
@@ -799,13 +850,31 @@ function updateProjectiles(dt) {
     }
     if (hitPowerup) continue;
 
-    // thomas collision (circle around upper body center)
+    // blue powerup collision — SHOOT the 2mg badge to activate double damage
+    let hitPowerupBlue = false;
+    for (let j = game.powerupsBlue.length - 1; j >= 0; j--) {
+      const pu = game.powerupsBlue[j];
+      const dxp = p.x - pu.x, dyp = p.y - pu.y;
+      const rsum = pu.r + p.r;
+      if (dxp * dxp + dyp * dyp < rsum * rsum) {
+        activateDoubleDamage(pu.x, pu.y);
+        game.powerupsBlue.splice(j, 1);
+        game.projectiles.splice(i, 1);
+        hitPowerupBlue = true;
+        break;
+      }
+    }
+    if (hitPowerupBlue) continue;
+
+    // thomas collision (circle around upper body center) — double damage
+    // (×DOUBLE_DAMAGE_MULT) while the blue 2mg power-up is active.
     const tcx = t.x;
     const tcy = t.y - THOMAS_BODY_H * 0.45;
     const tR = thomasCollideR(t.weight) + 12;
     const dx = p.x - tcx, dy = p.y - tcy;
     if (dx * dx + dy * dy < tR * tR) {
-      t.weight = Math.max(WEIGHT_WIN, t.weight - 2);
+      const dmg = (game.doubleDamageRemaining > 0) ? 2 * DOUBLE_DAMAGE_MULT : 2;
+      t.weight = Math.max(WEIGHT_WIN, t.weight - dmg);
       t.hitTimer = 0.5;
       t.anim = "shirt-lift";
       spawnHitParticles(p.x, p.y);
@@ -991,31 +1060,57 @@ function triggerGameOver() {
 
 let lastRunSummary = null;
 
-function loadLeaderboard() {
+// Leaderboard now lives server-side. We POST the score, then GET the top 20.
+// While that's in flight, drawGameOverScreen shows "Loading scores…".
+// On error, lastRunSummary.leaderboardError is set so we render a friendly
+// fallback instead of an empty list.
+async function submitScore(summary) {
   try {
-    const raw = localStorage.getItem("thozempic_scores");
-    if (!raw) return [];
-    const arr = JSON.parse(raw);
-    return Array.isArray(arr) ? arr : [];
-  } catch (e) { return []; }
+    const res = await fetch("/api/scores", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: summary.name,
+        score: summary.total,
+        level: summary.levelReached,
+        seconds: summary.seconds,
+        kg_lost: summary.kgLost
+      })
+    });
+    if (!res.ok) throw new Error("submit status " + res.status);
+    const data = await res.json();
+    return data.id; // server-assigned row id, used to highlight the player
+  } catch (e) {
+    console.error("score submit failed", e);
+    return null;
+  }
 }
 
-function saveLeaderboardWithCurrent() {
-  if (!lastRunSummary) return [];
-  const board = loadLeaderboard();
-  const entry = {
-    name: lastRunSummary.name || "Anon",
-    score: lastRunSummary.total,
-    date: Date.now()
-  };
-  board.push(entry);
-  board.sort((a, b) => b.score - a.score);
-  const trimmed = board.slice(0, 10);
-  try { localStorage.setItem("thozempic_scores", JSON.stringify(trimmed)); }
-  catch (e) { /* localStorage may be unavailable; ignore */ }
-  lastRunSummary.leaderboard = trimmed;
-  lastRunSummary.currentEntryIndex = trimmed.indexOf(entry);
-  return trimmed;
+async function fetchLeaderboard() {
+  try {
+    const res = await fetch("/api/scores");
+    if (!res.ok) throw new Error("fetch status " + res.status);
+    return await res.json();
+  } catch (e) {
+    console.error("leaderboard fetch failed", e);
+    return null;
+  }
+}
+
+async function syncLeaderboardForRun(summary) {
+  summary.leaderboard = undefined;     // "loading" sentinel
+  summary.currentEntryId = null;
+  summary.leaderboardError = false;
+
+  const id = await submitScore(summary);
+  summary.currentEntryId = id;
+  const board = await fetchLeaderboard();
+  if (board === null) {
+    summary.leaderboard = [];
+    summary.leaderboardError = true;
+  } else {
+    summary.leaderboard = board;
+  }
 }
 
 function finalizeAndGoToGameOver(won) {
@@ -1031,9 +1126,14 @@ function finalizeAndGoToGameOver(won) {
     kgLost: Math.floor(kgLost),
     levelScore, timeScore, kgScore,
     total: levelScore + timeScore + kgScore,
-    name: playerName || "Anon"
+    name: playerName || "Anon",
+    leaderboard: undefined,        // becomes [] or array after sync
+    currentEntryId: null,
+    leaderboardError: false
   };
-  saveLeaderboardWithCurrent();
+  // Fire-and-forget: drawing the screen during the await is OK; it'll
+  // re-render with the data once the promise resolves.
+  syncLeaderboardForRun(lastRunSummary);
   goToGameOver();
 }
 
@@ -1067,12 +1167,14 @@ function render() {
   const entities = [];
   for (const f of game.foods) entities.push({ kind: "food", obj: f, sortY: f.y + f.r });
   for (const p of game.powerups) entities.push({ kind: "powerup", obj: p, sortY: p.y + p.r });
+  for (const p of game.powerupsBlue) entities.push({ kind: "powerupBlue", obj: p, sortY: p.y + p.r });
   if (game.cafe) entities.push({ kind: "cafe", obj: game.cafe, sortY: game.cafe.y + CAFE_H });
   entities.push({ kind: "thomas", obj: game.thomas, sortY: game.thomas.y });
   entities.sort((a, b) => a.sortY - b.sortY);
   for (const e of entities) {
     if (e.kind === "food") drawFood(e.obj);
     else if (e.kind === "powerup") drawPowerup(e.obj);
+    else if (e.kind === "powerupBlue") drawPowerupBlue(e.obj);
     else if (e.kind === "cafe") drawCafe(e.obj);
     else if (e.kind === "thomas") drawThomas(e.obj);
   }
@@ -1169,7 +1271,7 @@ function drawGameOverScreen() {
   const s = lastRunSummary || {
     won: false, levelReached: 0, seconds: 0, kgLost: 0,
     levelScore: 0, timeScore: 0, kgScore: 0, total: 0,
-    leaderboard: [], currentEntryIndex: -1
+    leaderboard: [], currentEntryId: null, leaderboardError: false
   };
 
   // Header
@@ -1216,14 +1318,27 @@ function drawGameOverScreen() {
   ctx.textAlign = "center";
   ctx.fillText("LEADERBOARD", LOGICAL_W / 2, lbHeaderY);
 
-  // Leaderboard rows
-  const board = s.leaderboard || [];
+  // Leaderboard rows — three states: loading (undefined), error, loaded.
   const rowH = 26;
   const rowsTop = lbHeaderY + 24;
+
+  if (s.leaderboard === undefined) {
+    ctx.fillStyle = "rgba(255,255,255,0.7)";
+    ctx.font = "900 16px Arial Black, Impact, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("Loading scores…", LOGICAL_W / 2, rowsTop + 10);
+  } else if (s.leaderboardError) {
+    ctx.fillStyle = "#FF9C9C";
+    ctx.font = "900 16px Arial Black, Impact, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("Leaderboard unavailable", LOGICAL_W / 2, rowsTop + 10);
+  }
+
+  const board = s.leaderboard || [];
   ctx.font = "900 16px Arial Black, Impact, sans-serif";
   for (let i = 0; i < board.length; i++) {
     const y = rowsTop + i * rowH;
-    const isMe = i === s.currentEntryIndex;
+    const isMe = s.currentEntryId != null && board[i].id === s.currentEntryId;
     if (isMe) {
       ctx.fillStyle = "rgba(255, 215, 0, 0.22)";
       ctx.fillRect(30, y - rowH / 2 + 3, LOGICAL_W - 60, rowH - 2);
@@ -1458,6 +1573,62 @@ function drawPowerup(p) {
   ctx.globalAlpha = 1;
 }
 
+function drawPowerupBlue(p) {
+  const bob = Math.sin(p.bobPhase) * 3;
+  const scaleIn = clamp(p.spawnT / 0.25, 0, 1);
+  const fade = clamp((POWERUP_BLUE_LIFETIME - p.spawnT) / 1, 0, 1);
+  ctx.globalAlpha = fade;
+
+  // Pulsing blue glow halo
+  const pulse = 0.5 + 0.5 * Math.sin(game.time * 6);
+  const glowR = p.r * (1.6 + pulse * 0.4);
+  const grad = ctx.createRadialGradient(p.x, p.y - 6 + bob, 4, p.x, p.y - 6 + bob, glowR);
+  grad.addColorStop(0, "rgba(68, 136, 255, 0.55)");
+  grad.addColorStop(1, "rgba(68, 136, 255, 0)");
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.arc(p.x, p.y - 6 + bob, glowR, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Shadow
+  ctx.fillStyle = C.shadow;
+  ctx.beginPath();
+  ctx.ellipse(p.x, p.y + p.r - 4, p.r * 0.7, 5, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Blue rounded-rectangle pill, white border, "2mg" label
+  ctx.save();
+  ctx.translate(p.x, p.y - 6 + bob);
+  ctx.scale(scaleIn, scaleIn);
+  const w = 46, h = 32, r = 12;
+  // outer white border (drawn as a slightly larger fill behind the pill)
+  ctx.fillStyle = "#FFFFFF";
+  roundedRect(-w / 2 - 3, -h / 2 - 3, w + 6, h + 6, r + 3);
+  ctx.fill();
+  // blue pill
+  ctx.fillStyle = POWERUP_BLUE_COLOR;
+  ctx.strokeStyle = "#1A2A4A";
+  ctx.lineWidth = 2;
+  roundedRect(-w / 2, -h / 2, w, h, r);
+  ctx.fill(); ctx.stroke();
+  // subtle gloss highlight on top half
+  ctx.fillStyle = "rgba(255,255,255,0.22)";
+  roundedRect(-w / 2 + 4, -h / 2 + 3, w - 8, h * 0.4, r * 0.6);
+  ctx.fill();
+  // "2mg" text
+  ctx.fillStyle = "#FFFFFF";
+  ctx.strokeStyle = "rgba(0,0,0,0.35)";
+  ctx.lineWidth = 3;
+  ctx.font = "900 18px Arial Black, Impact, sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.strokeText("2mg", 0, 1);
+  ctx.fillText("2mg", 0, 1);
+  ctx.restore();
+
+  ctx.globalAlpha = 1;
+}
+
 function drawCafe(c) {
   let a = 1;
   if (c.state === "dying") a = 1 - clamp(c.puffT / 0.3, 0, 1);
@@ -1593,6 +1764,17 @@ function drawThomasBody(x, y, t) {
   const shoulderY = hipY - BODY_TORSO_H;
   const headTopY  = shoulderY - BODY_HEAD_GAP - BODY_HEAD_H;
 
+  // Per-limb attach offsets (torso/head positions are unchanged):
+  //  - arms move 15% of torso H DOWN and 10% of avg torso W INWARD
+  //  - legs move 20% of torso H UP to close the gap below the torso
+  const torsoWAvg     = (BODY_TORSO_W_MIN + BODY_TORSO_W_MAX) / 2;
+  const ARM_ATTACH_DY = Math.round(BODY_TORSO_H * 0.15);   // 14
+  const ARM_ATTACH_DX = Math.round(torsoWAvg     * 0.10);  // 11
+  const LEG_ATTACH_DY = Math.round(BODY_TORSO_H * 0.20);   // 18
+  const armPivotY     = shoulderY + ARM_ATTACH_DY;
+  const legPivotY     = hipY      - LEG_ATTACH_DY;
+  const armDx         = Math.max(0, BODY_SHOULDER_DX - ARM_ATTACH_DX);
+
   // Facing: -1 → flip horizontally. 0 / +1 → no flip.
   const flipX = (t.facing === -1) ? -1 : 1;
 
@@ -1605,15 +1787,15 @@ function drawThomasBody(x, y, t) {
   const backArmImg  = assets.armL;
 
   // 1. back leg (left)
-  drawLimb(assets.legL, -BODY_HIP_DX, hipY, BODY_LEG_H, swingLegL);
+  drawLimb(assets.legL, -BODY_HIP_DX, legPivotY, BODY_LEG_H, swingLegL);
   // 2. back arm (left)
-  drawLimb(backArmImg, -BODY_SHOULDER_DX, shoulderY, BODY_ARM_H, swingArmL);
+  drawLimb(backArmImg, -armDx, armPivotY, BODY_ARM_H, swingArmL);
   // 3. torso (centered horizontally; top at shoulder line)
   if (torsoImg) ctx.drawImage(torsoImg, -torsoW / 2, shoulderY, torsoW, BODY_TORSO_H);
   // 4. front leg (right)
-  drawLimb(assets.legR, BODY_HIP_DX, hipY, BODY_LEG_H, swingLegR);
+  drawLimb(assets.legR, BODY_HIP_DX, legPivotY, BODY_LEG_H, swingLegR);
   // 5. front arm — shoot pose freezes the swing; otherwise normal R-arm swing.
-  drawLimb(frontArmImg, BODY_SHOULDER_DX, shoulderY, BODY_ARM_H, isShoot ? 0 : swingArmR);
+  drawLimb(frontArmImg, armDx, armPivotY, BODY_ARM_H, isShoot ? 0 : swingArmR);
   // 6. head — no rotation, fixed above torso center
   if (assets.thomasHead) ctx.drawImage(assets.thomasHead, -BODY_HEAD_W / 2, headTopY, BODY_HEAD_W, BODY_HEAD_H);
 
@@ -1832,11 +2014,15 @@ function drawPad() {
   ctx.rect(-4, -PEND_LEN, 8, PEND_LEN);
   ctx.fill(); ctx.stroke();
 
-  // Pulsing golden glow during rapid-fire (fades out in last 0.5s)
+  // Pulsing glows during power-ups. Both halos are additive so when gold +
+  // blue stack the centre reads as white-ish while the outer ring keeps the
+  // gold/blue tint, making each effect identifiable.
+  const pulse = 0.5 + 0.5 * Math.sin(game.time * 12);
+  const glowR = 38 + pulse * 12;
+  ctx.save();
+  ctx.globalCompositeOperation = "lighter";
   if (game.rapidFireRemaining > 0) {
     const fade = clamp(game.rapidFireRemaining / 0.5, 0, 1);
-    const pulse = 0.5 + 0.5 * Math.sin(game.time * 12);
-    const glowR = 38 + pulse * 12;
     const grad = ctx.createRadialGradient(0, -PEND_LEN, 4, 0, -PEND_LEN, glowR);
     grad.addColorStop(0, "rgba(255, 215, 0, " + (0.85 * fade) + ")");
     grad.addColorStop(0.6, "rgba(255, 215, 0, " + (0.35 * fade) + ")");
@@ -1846,8 +2032,21 @@ function drawPad() {
     ctx.arc(0, -PEND_LEN, glowR, 0, Math.PI * 2);
     ctx.fill();
   }
+  if (game.doubleDamageRemaining > 0) {
+    const fade = clamp(game.doubleDamageRemaining / 0.5, 0, 1);
+    const grad = ctx.createRadialGradient(0, -PEND_LEN, 4, 0, -PEND_LEN, glowR);
+    grad.addColorStop(0, "rgba(68, 136, 255, " + (0.85 * fade) + ")");
+    grad.addColorStop(0.6, "rgba(68, 136, 255, " + (0.35 * fade) + ")");
+    grad.addColorStop(1, "rgba(68, 136, 255, 0)");
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(0, -PEND_LEN, glowR, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
 
-  if (game.pendulum.cooldownMs > 0 && !(game.rapidFireRemaining > 0)) ctx.globalAlpha = 0.4;
+  const anyGlow = (game.rapidFireRemaining > 0) || (game.doubleDamageRemaining > 0);
+  if (game.pendulum.cooldownMs > 0 && !anyGlow) ctx.globalAlpha = 0.4;
   drawSyringe(0, -PEND_LEN, 1.1, true);
   ctx.globalAlpha = 1;
   ctx.restore();

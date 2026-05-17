@@ -5,11 +5,14 @@ Dockerfile
 docker-compose.yml
 README.md
 *.md
+PLAN.md
 Thumbs.db
 .DS_Store
 .vscode/
 .idea/
+node_modules
 files.zip
-thomas-head.png
 thomas-head-base64.txt
 thomas-head-snippet.js
+thomas-head.png
+background.png

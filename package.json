@@ -1,0 +1,14 @@
+{
+  "name": "thozempic",
+  "version": "1.0.0",
+  "description": "Thozempic — shared-leaderboard backend for the canvas game",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.5.0",
+    "express": "^4.19.2"
+  }
+}
