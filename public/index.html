@@ -475,6 +475,9 @@ function newGame(level = 1) {
 function foodIntervalForLevel(level) { return FOOD_BASE_INTERVAL / (1 + 0.20 * (level - 1)); }
 function pendulumPeriodForLevel(level) { return PEND_BASE_PERIOD / (1 + 0.25 * (level - 1)); }
 function walkSpeedForLevel(level) { return THOMAS_BASE_WALK * (1 + 0.10 * (level - 1)); }
+// FINAL_LEVEL needs to be readable here because cafeRateMul is called from
+// newGame() at module init, before later const blocks have run.
+const FINAL_LEVEL = 6;
 function cafeRateMul(level) {
   const base = 1 + 0.15 * (level - 1);
   // Hell (level 6) gets a 2.5x bier-spawn-rate boost on top of the normal ramp.
@@ -1019,7 +1022,7 @@ function updateConfetti(dt) {
 }
 
 // ---------- Triggers ----------
-const FINAL_LEVEL = 6;
+// FINAL_LEVEL declared earlier (above cafeRateMul) for TDZ reasons.
 const BG_FADE_DURATION = 0.3;  // seconds
 
 function bgImgForLevel(level) {
