@@ -91,8 +91,9 @@ const ASSET_LIST = [
   ["pizza",      "pizza.png"],
   ["icon",       "icon.png"],
   ["bier",       "bier.png"],
-  // kapsalon.png is 8bpp indexed PNG; its palette includes a transparent
-  // entry so the browser renders the background correctly without extra work.
+  // kapsalon.png shipped with an opaque near-white background (no tRNS chunk
+  // in the indexed palette). Preprocessed once with a border flood-fill so
+  // the asset on disk now has a real alpha channel; loads as-is at runtime.
   ["kapsalon",   "kapsalon.png"],
   ["torsoSlim",  "thomas-torso.png"],
   ["torsoMid",   "thomas-torso-midden.png"],
@@ -223,7 +224,7 @@ const FOOD_MAX_ONFIELD = 12;
 // Power-up tuning. Gold (rapid fire) is rare; blue (2mg double damage) is
 // the common one. Timers run independently so both effects can be active
 // at once if the player hits a gold during a blue window.
-const POWERUP_INTERVAL = 28;           // seconds — gold spawn cadence (rare)
+const POWERUP_INTERVAL = 10;           // seconds — gold spawn cadence (uncommon)
 const POWERUP_RADIUS = 26;
 const POWERUP_LIFETIME = 10;           // disappears if not collected
 const RAPID_FIRE_DURATION = 4;
@@ -480,8 +481,8 @@ function walkSpeedForLevel(level) { return THOMAS_BASE_WALK * (1 + 0.10 * (level
 const FINAL_LEVEL = 6;
 function cafeRateMul(level) {
   const base = 1 + 0.15 * (level - 1);
-  // Hell (level 6) gets a 2.5x bier-spawn-rate boost on top of the normal ramp.
-  return level >= FINAL_LEVEL ? base * 2.5 : base;
+  // Hell (level 6) gets a 1.5x bier-spawn-rate boost on top of the normal ramp.
+  return level >= FINAL_LEVEL ? base * 1.5 : base;
 }
 
 newGame(1);
