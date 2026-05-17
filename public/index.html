@@ -217,17 +217,17 @@ const FOOD_BASE_INTERVAL = 1.5;
 const FOOD_RADIUS = 24;
 const FOOD_MAX_ONFIELD = 12;
 
-// Power-up tuning (golden Ozempic 2mg syringe)
-const POWERUP_INTERVAL = 14;           // seconds between spawns (drop-rate -30%)
+// Power-up tuning. Gold (rapid fire) is rare; blue (2mg double damage) is
+// the common one. Timers run independently so both effects can be active
+// at once if the player hits a gold during a blue window.
+const POWERUP_INTERVAL = 28;           // seconds — gold spawn cadence (rare)
 const POWERUP_RADIUS = 26;
 const POWERUP_LIFETIME = 10;           // disappears if not collected
-const RAPID_FIRE_DURATION = 4;         // seconds of rapid fire after pickup
-const RAPID_FIRE_COOLDOWN_MS = 80;     // machine-gun pace cooldown
+const RAPID_FIRE_DURATION = 4;
+const RAPID_FIRE_COOLDOWN_MS = 80;
 const POWERUP_GOLD = "#FFD700";
 
-// Blue 2mg power-up: SHOOT it to enable double damage on Ozempic hits.
-// Independent timer from the gold one; same lifetime and shoot-only rule.
-const POWERUP_BLUE_INTERVAL  = 14;
+const POWERUP_BLUE_INTERVAL  = 9;      // seconds — blue spawn cadence (common)
 const POWERUP_BLUE_LIFETIME  = 10;
 const DOUBLE_DAMAGE_DURATION = 7;
 const DOUBLE_DAMAGE_MULT     = 2;
@@ -1762,7 +1762,10 @@ function drawThomasBody(x, y, t) {
   // Anchor coords in Thomas-local space (origin at feet center).
   const hipY      = -BODY_LEG_H;
   const shoulderY = hipY - BODY_TORSO_H;
-  const headTopY  = shoulderY - BODY_HEAD_GAP - BODY_HEAD_H;
+  // Head drops 20% of head height toward the torso so the neck doesn't
+  // look stretched. Bottom of the head image overlaps the torso top a bit.
+  const HEAD_DROP = Math.round(BODY_HEAD_H * 0.20);
+  const headTopY  = shoulderY - BODY_HEAD_GAP - BODY_HEAD_H + HEAD_DROP;
 
   // Per-limb attach offsets (torso/head positions are unchanged):
   //  - arms move 15% of torso H DOWN and 10% of avg torso W INWARD
