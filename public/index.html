@@ -90,7 +90,10 @@ const ASSET_LIST = [
   ["hamburger",  "hamburger.png"],
   ["pizza",      "pizza.png"],
   ["icon",       "icon.png"],
-  ["kroeg",      "kroeg.png"],
+  ["bier",       "bier.png"],
+  // kapsalon.png is 8bpp indexed PNG; its palette includes a transparent
+  // entry so the browser renders the background correctly without extra work.
+  ["kapsalon",   "kapsalon.png"],
   ["torsoSlim",  "thomas-torso.png"],
   ["torsoMid",   "thomas-torso-midden.png"],
   ["torsoDik",   "thomas-torso-dik.png"],
@@ -472,7 +475,11 @@ function newGame(level = 1) {
 function foodIntervalForLevel(level) { return FOOD_BASE_INTERVAL / (1 + 0.20 * (level - 1)); }
 function pendulumPeriodForLevel(level) { return PEND_BASE_PERIOD / (1 + 0.25 * (level - 1)); }
 function walkSpeedForLevel(level) { return THOMAS_BASE_WALK * (1 + 0.10 * (level - 1)); }
-function cafeRateMul(level) { return 1 + 0.15 * (level - 1); }
+function cafeRateMul(level) {
+  const base = 1 + 0.15 * (level - 1);
+  // Hell (level 6) gets a 2.5x bier-spawn-rate boost on top of the normal ramp.
+  return level >= FINAL_LEVEL ? base * 2.5 : base;
+}
 
 newGame(1);
 
@@ -498,14 +505,12 @@ function thomasCollideR(weight) {
 // ---------- Food ----------
 function spawnFood() {
   if (game.foods.length >= FOOD_MAX_ONFIELD) return;
+  // Three foods spawn at equal frequency (1/3 each).
   const r = Math.random();
-  const lvl = game.level;
-  let kapsalonP = lvl >= 5 ? 0.10 : 0.05;
-  let pizzaP    = lvl >= 5 ? 0.35 : 0.25;
   let kind;
-  if (r < kapsalonP) kind = "kapsalon";
-  else if (r < kapsalonP + pizzaP) kind = "pizza";
-  else kind = "hamburger";
+  if (r < 1 / 3)      kind = "kapsalon";
+  else if (r < 2 / 3) kind = "pizza";
+  else                kind = "hamburger";
   const kg = kind === "kapsalon" ? 3 : kind === "pizza" ? 2 : 1;
 
   // pick a position on the road, but not too close to Thomas.
@@ -604,10 +609,10 @@ function activateDoubleDamage(x, y) {
 }
 
 // ---------- Cafe ----------
-// Kroeg = falling obstacle (replaces the old sliding cafe; same gameplay penalty)
-const KROEG_FALL_SPEED   = 180;   // px/s
-const KROEG_WOBBLE_PERIOD = 0.6;  // s for one full wobble
-const KROEG_WOBBLE_DEG    = 10;   // ± degrees
+// Bier = falling obstacle (replaces the old sliding cafe; same gameplay penalty)
+const BIER_FALL_SPEED   = 180;   // px/s
+const BIER_WOBBLE_PERIOD = 0.6;  // s for one full wobble
+const BIER_WOBBLE_DEG    = 10;   // ± degrees
 
 function spawnCafe() {
   const x = randRange(ROAD_LEFT + CAFE_W / 2 + 10, ROAD_RIGHT - CAFE_W / 2 - 10);
@@ -819,7 +824,7 @@ function updateProjectiles(dt) {
     p.x += p.vx * dt;
     p.y += p.vy * dt;
 
-    // kroeg collision — shoot the falling kroeg before it lands.
+    // bier collision — shoot the falling bier tray before it lands.
     // (Old check used stale states "idle"/"sliding_in" from the pre-refactor
     // cafe; after the refactor the only relevant state is "falling".)
     if (game.cafe && game.cafe.state === "falling") {
@@ -891,7 +896,7 @@ function updateProjectiles(dt) {
 function updateCafe(dt) {
   const c = game.cafe;
   if (c.state === "falling") {
-    c.y += KROEG_FALL_SPEED * dt;
+    c.y += BIER_FALL_SPEED * dt;
     c.fallT += dt;
     checkCafeThomasCollision();
     // Despawn once it's left the canvas without hitting anything.
@@ -1490,6 +1495,12 @@ function drawFoodSprite(kind, r) {
     ctx.beginPath(); ctx.arc(6, 4, 3, 0, Math.PI * 2); ctx.fill();
     ctx.beginPath(); ctx.arc(-2, 10, 3, 0, Math.PI * 2); ctx.fill();
   } else if (kind === "kapsalon") {
+    if (assets.kapsalon) {
+      const s = r * 2.2;
+      ctx.drawImage(assets.kapsalon, -s / 2, -s / 2, s, s);
+      return;
+    }
+    // Procedural fallback if the PNG hasn't loaded yet.
     ctx.fillStyle = "#888";
     ctx.beginPath(); ctx.rect(-r, -r * 0.4, r * 2, r * 1.2); ctx.fill(); ctx.stroke();
     ctx.fillStyle = C.kapsalonFries;
@@ -1635,13 +1646,13 @@ function drawCafe(c) {
   ctx.globalAlpha = a;
 
   ctx.save();
-  // Rotate around the kroeg's visual center.
+  // Rotate around the bier tray's visual center.
   ctx.translate(c.x, c.y + CAFE_H / 2);
-  const wobblePhase = (c.fallT || 0) * (2 * Math.PI / KROEG_WOBBLE_PERIOD);
-  const wobbleRad = Math.sin(wobblePhase) * KROEG_WOBBLE_DEG * Math.PI / 180;
+  const wobblePhase = (c.fallT || 0) * (2 * Math.PI / BIER_WOBBLE_PERIOD);
+  const wobbleRad = Math.sin(wobblePhase) * BIER_WOBBLE_DEG * Math.PI / 180;
   ctx.rotate(wobbleRad);
-  if (assets.kroeg) {
-    ctx.drawImage(assets.kroeg, -CAFE_W / 2, -CAFE_H / 2, CAFE_W, CAFE_H);
+  if (assets.bier) {
+    ctx.drawImage(assets.bier, -CAFE_W / 2, -CAFE_H / 2, CAFE_W, CAFE_H);
   } else {
     // Fallback box so something still appears if the asset is missing.
     ctx.fillStyle = "#6B4423";
@@ -2052,6 +2063,42 @@ function drawPad() {
   if (game.pendulum.cooldownMs > 0 && !anyGlow) ctx.globalAlpha = 0.4;
   drawSyringe(0, -PEND_LEN, 1.1, true);
   ctx.globalAlpha = 1;
+  ctx.restore();
+
+  drawActivePowerupLabels();
+}
+
+// "SPRAY!" / "2x" labels sit above the pendulum in fixed screen space (they
+// do not rotate with the swing). Gold stacks on top of blue when both active.
+function drawActivePowerupLabels() {
+  const gold = game.rapidFireRemaining > 0;
+  const blue = game.doubleDamageRemaining > 0;
+  if (!gold && !blue) return;
+
+  ctx.save();
+  ctx.font = "900 22px Arial Black, Impact, sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.strokeStyle = "#1A1A1A";
+  ctx.lineWidth = 4;
+
+  const baseY = PAD_TOP + 18;          // just below the pad's top edge
+  if (gold && blue) {
+    ctx.fillStyle = "#FFD700";
+    ctx.strokeText("SPRAY!", PAD_CENTER_X, baseY);
+    ctx.fillText("SPRAY!", PAD_CENTER_X, baseY);
+    ctx.fillStyle = "#4488FF";
+    ctx.strokeText("2x", PAD_CENTER_X, baseY + 22);
+    ctx.fillText("2x", PAD_CENTER_X, baseY + 22);
+  } else if (gold) {
+    ctx.fillStyle = "#FFD700";
+    ctx.strokeText("SPRAY!", PAD_CENTER_X, baseY);
+    ctx.fillText("SPRAY!", PAD_CENTER_X, baseY);
+  } else {
+    ctx.fillStyle = "#4488FF";
+    ctx.strokeText("2x", PAD_CENTER_X, baseY);
+    ctx.fillText("2x", PAD_CENTER_X, baseY);
+  }
   ctx.restore();
 }
 
