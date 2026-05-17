@@ -217,7 +217,7 @@ const SHOT_COOLDOWN_MS = 1000;
 const SHOT_RADIUS = 14;
 
 // Food spawn tuning
-const FOOD_BASE_INTERVAL = 1.5;
+const FOOD_BASE_INTERVAL = 1.725;   // 15% slower than the previous 1.5s baseline
 const FOOD_RADIUS = 24;
 const FOOD_MAX_ONFIELD = 12;
 
@@ -509,12 +509,12 @@ function thomasCollideR(weight) {
 // ---------- Food ----------
 function spawnFood() {
   if (game.foods.length >= FOOD_MAX_ONFIELD) return;
-  // Three foods spawn at equal frequency (1/3 each).
+  // Spawn weights: 50% hamburger (light), 30% pizza, 20% kapsalon (heaviest).
   const r = Math.random();
   let kind;
-  if (r < 1 / 3)      kind = "kapsalon";
-  else if (r < 2 / 3) kind = "pizza";
-  else                kind = "hamburger";
+  if (r < 0.50)      kind = "hamburger";
+  else if (r < 0.80) kind = "pizza";
+  else               kind = "kapsalon";
   const kg = kind === "kapsalon" ? 3 : kind === "pizza" ? 2 : 1;
 
   // pick a position on the road, but not too close to Thomas.
